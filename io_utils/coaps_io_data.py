@@ -22,7 +22,7 @@ def get_aviso_by_month(aviso_folder: str, c_date: datetime, bbox: Optional[List[
     Reads AVISO monthly data for a given date. You can also specify a bounding box and the data will be cropped to that region.
     '''
     aviso_file_name = join(aviso_folder, f"{c_date.year}-{c_date.month:02d}.nc")
-    aviso_data = xr.load_dataset(aviso_file_name)
+    aviso_data = xr.open_dataset(aviso_file_name)
     if bbox is not None:
         aviso_data = aviso_data.sel(latitude=slice(bbox[0],bbox[1]),
                                     longitude=slice(bbox[2],bbox[3]))
@@ -93,7 +93,7 @@ def get_sst_ghrsst_by_date(sst_folder, c_date, bbox=None):
     '''
     c_date_str = c_date.strftime("%Y%m%d")
     sst_file_name = join(sst_folder, str(c_date.year), f"{c_date_str}090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1_subset.nc")
-    sst_data = xr.load_dataset(sst_file_name)
+    sst_data = xr.open_dataset(sst_file_name)
     if bbox is not None:
         sst_data = sst_data.sel( lat=slice(bbox[0],bbox[1]),
                                 lon=slice(bbox[2],bbox[3]))
@@ -106,7 +106,7 @@ def get_sst_ghrsst_by_date(sst_folder, c_date, bbox=None):
 # %% SST OSTIA by year
 def get_sst_ostia_by_year(sst_folder, year, bbox=None):
     sst_file_name = join(sst_folder, f"OSTIA_SST_{year}.nc")
-    sst_data = xr.load_dataset(sst_file_name)
+    sst_data = xr.open_dataset(sst_file_name)
     if bbox is not None:
         sst_data = sst_data.sel(lat=slice(bbox[0], bbox[1]), lon=slice(bbox[2], bbox[3]))
 
@@ -126,7 +126,7 @@ def get_sss_by_date(sss_folder, c_date, bbox=None):
     day_of_year = get_day_of_year_from_month_and_day(c_date.month, c_date.day, year=datetime.now().year)
 
     sss_file_name = join(sss_folder, str(c_date.year), f"RSS_smap_SSS_L3_8day_running_{c_date.year}_{day_of_year:03d}_FNL_v05.0.nc")
-    sss_data = xr.load_dataset(sss_file_name)
+    sss_data = xr.open_dataset(sss_file_name)
     if bbox is not None:
         sss_data = sss_data.sel( lat=slice(bbox[0],bbox[1]),
                                 lon=slice((bbox[2] + 360)%360,(bbox[3] + 360)%360))
@@ -142,7 +142,7 @@ def get_chlora_noaa_by_date(input_folder, c_date, bbox=None):
     Reads Chlor-a data single day for a given date. You can also specify a bounding box and the data will be cropped to that region.
     '''
     chlora_file_name = join(input_folder,  f"{c_date.year}-{c_date.month:02d}-{c_date.day:02d}.nc")
-    chlora = xr.load_dataset(chlora_file_name)
+    chlora = xr.open_dataset(chlora_file_name)
     if bbox is not None:
         # TODO for some reason the latitude field is flipped
         chlora = chlora.sel( latitude=slice(bbox[1],bbox[0]),
@@ -162,7 +162,7 @@ def get_chlora_noaa_by_date_range(input_folder, start_date, end_date, bbox=None)
     for i, c_date in enumerate(pd.date_range(start=start_date, end=end_date, freq="1D")):
         chlora_file_name = join(input_folder,  f"{c_date.year}-{c_date.month:02d}-{c_date.day:02d}.nc")
 
-        chlora = xr.load_dataset(chlora_file_name)
+        chlora = xr.open_dataset(chlora_file_name)
         if bbox is not None:
             # TODO for some reason the latitude field is flipped
             chlora = chlora.sel( latitude=slice(bbox[1],bbox[0]),
@@ -197,7 +197,7 @@ def get_chlora_copernicus_by_date(input_folder, c_date, bbox=None):
         cop_files = [x for x in os.listdir(input_folder) if x.find(str(c_year)) != -1]
         assert len(cop_files) == 1, "There should be only one file per year"
         file_name = cop_files[0]
-        ds = xr.load_dataset(join(input_folder, file_name))
+        ds = xr.open_dataset(join(input_folder, file_name))
         chlora = ds.CHL
         c_day_of_year = get_day_of_year_from_month_and_day(c_date.month, c_date.day, c_year)
 
@@ -222,7 +222,7 @@ def get_chlora_copernicus_by_date_range(input_folder, start_date, end_date, bbox
         cop_files = [x for x in os.listdir(input_folder) if x.find(str(c_year)) != -1]
         assert len(cop_files) == 1, "There should be only one file per year"
         file_name = cop_files[0]
-        ds = xr.load_dataset(join(input_folder, file_name))
+        ds = xr.open_dataset(join(input_folder, file_name))
         chlora = ds.CHL
         c_day_of_year = get_day_of_year_from_month_and_day(c_start_date.month, c_start_date.day, c_year)
         if end_year == c_year:
@@ -324,7 +324,7 @@ def get_hycom_gom_raw_by_date(c_date, bbox=None):
                                         })
 
 
-    # hycom_data = xr.load_dataset(hycom_file_name, decode_times=False)
+    # hycom_data = xr.open_dataset(hycom_file_name, decode_times=False)
 
     lats = hycom_data.latitude
     lons = hycom_data.longitude
