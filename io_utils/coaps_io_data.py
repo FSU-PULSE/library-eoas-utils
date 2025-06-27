@@ -33,23 +33,52 @@ def get_aviso_by_month(aviso_folder: str, c_date: datetime, bbox: Optional[List[
     return aviso_data, lats, lons
 
 # %% AVISO by date
-def get_aviso_by_date(aviso_folder: str, c_date: datetime, bbox: Optional[List[float]] = None) -> Tuple[xr.Dataset, xr.DataArray, xr.DataArray]:
+def get_aviso_by_date(aviso_folder, c_date, bbox=None):
     '''
-    Reads AVISO single day for a given date. You can also specify a bounding box and the data will be cropped to that region.
+    Reads AVISO data for a specified date, and optionally crops to a specified bounding box.
+    If the standard file naming convention fails, an alternative file naming convention is used.
+
+    Parameters:
+        aviso_folder (str): Directory containing AVISO files.
+        c_date (datetime.date): Date for which to retrieve data.
+        bbox (tuple of float, optional): Bounding box as (min_lat, max_lat, min_lon, max_lon).
+
+    Returns:
+        Tuple containing the AVISO dataset, latitudes, and longitudes.
     '''
-    aviso_file_name = join(aviso_folder, f"{c_date.year}-{c_date.month:02d}.nc")
-    aviso_data = xr.load_dataset(aviso_file_name)
+    # Standard file naming format
+    alternative_folder = '/home/jmiranda/Data/SSH/SEALEVEL_GLO_PHY_L4_NRT_008_046/'
+    standard_format = join(aviso_folder, f"{c_date.year}-{c_date.month:02d}.nc")
+    alternative_format = f"nrt_global_allsat_phy_l4_{c_date.strftime('%Y%m%d')}"
+    
+    # Attempt to load dataset using standard naming format
+    try:
+        aviso_data = xr.open_dataset(standard_format)
+    except FileNotFoundError:
+        # Alternative file naming format when standard file is not found
+        files = os.listdir(alternative_folder)
+        matching_files = [file for file in files if alternative_format in file]
+        
+        if not matching_files:
+            raise FileNotFoundError(f"No files found for date {c_date} in {alternative_format}")
+        
+        try:
+            aviso_data = xr.open_dataset(join(alternative_folder, matching_files[0]))
+        except:
+            raise RuntimeError(f"Could not load AVISO data for {c_date}, {matching_files[0]}")
+
+    # Crop to bounding box if specified
     if bbox is not None:
-        target_time = np.datetime64(f"{c_date.year}-{c_date.month:02d}-{c_date.day:02d}T00:00:00")
-        # Calculate the time differences
+        target_time = np.datetime64(c_date)
+        # Calculate the absolute time differences
         time_diff = np.abs(aviso_data["time"] - target_time)
         # Get the index of the closest time
         closest_index = np.argmin(time_diff.values)
-
-        print("Closest time index:", closest_index)
+        
+        # Select data for the closest time and within the specified bounding box
         aviso_data = aviso_data.sel(time=aviso_data["time"][closest_index],
-                                latitude=slice(bbox[0],bbox[1]),
-                                longitude=slice(bbox[2],bbox[3]))
+                                    latitude=slice(bbox[0], bbox[1]),
+                                    longitude=slice(bbox[2], bbox[3]))
 
     lats = aviso_data.latitude
     lons = aviso_data.longitude
