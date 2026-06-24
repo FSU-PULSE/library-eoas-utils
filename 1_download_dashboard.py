@@ -16,7 +16,7 @@ import plotly.graph_objects as go
 
 import dash
 import dash_bootstrap_components as dbc
-from dash import dcc, html
+from dash import dcc, html, ALL
 from dash.dependencies import Input, Output, State
 
 # ----------------------------------------------------------------------
@@ -525,6 +525,15 @@ app.layout = dbc.Container([
                         value=[],
                         id="loop-current-toggle",
                         switch=True,
+                        className="small mb-2 text-white"
+                    ),
+                    dbc.Checklist(
+                        options=[
+                            {"label": "Link map zoom/pan across panels", "value": "link"}
+                        ],
+                        value=[],
+                        id="link-zoom-toggle",
+                        switch=True,
                         className="small mb-3 text-white"
                     ),
                     html.Label("Region of Interest (GoM Bounds)", className="fw-bold small text-muted"),
@@ -648,6 +657,7 @@ app.layout = dbc.Container([
                     ),
                     html.Div(id="main-panels-container"),
                     dcc.Store(id="data-revision", data=0),
+                    dcc.Store(id="active-panel-ids", data=[]),
                     dcc.Store(id="map-viewport-sync", storage_type="session"),
                     dcc.Store(id="panel-order-sync", storage_type="session"),
                 ]),
@@ -893,6 +903,208 @@ def load_product_panel_data(
     }
 
 
+PLACEHOLDER_FIGURE = go.Figure().update_layout(
+    margin=dict(l=10, r=10, t=10, b=10),
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(color="#cbd5e1"),
+    uirevision=MAP_UIREVISION,
+    xaxis=dict(visible=False),
+    yaxis=dict(visible=False),
+)
+
+
+def build_product_figure(
+    active_tab: str,
+    prod_id: str,
+    payload: dict,
+    hover_toggle: list[str] | None,
+    viewport_for_figures: dict | None,
+) -> tuple[go.Figure, html.Div, bool]:
+    """Build the Plotly figure and metadata block for one product panel.
+
+    Args:
+        active_tab: Active dashboard variable tab id.
+        prod_id: Product key within the tab.
+        payload: Result dictionary from :func:`load_product_panel_data`.
+        hover_toggle: Sidebar hover toggle values.
+        viewport_for_figures: Shared map viewport to apply to the figure.
+
+    Returns:
+        Tuple of ``(figure, metadata_layout, is_available_with_data)``.
+    """
+    exists = payload["exists"]
+    data = payload["data"]
+    err = payload["err"]
+
+    if not exists:
+        fig = go.Figure().update_layout(
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#f8fafc"),
+            uirevision=MAP_UIREVISION,
+        )
+        fig.add_annotation(
+            text="No local data file found. Run a download script under download_data, then refresh.",
+            showarrow=False,
+            font=dict(color="#94a3b8", size=14),
+        )
+        return fig, render_metadata_layout(active_tab, prod_id, stats=None), False
+
+    if err:
+        fig = go.Figure().update_layout(
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#f8fafc"),
+            uirevision=MAP_UIREVISION,
+        )
+        fig.add_annotation(text=err, showarrow=False, font=dict(color="red", size=14))
+        meta_layout = html.Div([
+            html.Div(f"Error details: {err}", className="text-danger fw-bold small mb-2"),
+            render_metadata_layout(active_tab, prod_id, stats=None),
+        ])
+        return fig, meta_layout, False
+
+    if active_tab == "ssh":
+        lons, lats, values, colorscale, title_name, lc_coords = data
+    else:
+        lons, lats, values, colorscale, title_name = data
+        lc_coords = None
+
+    nan_mask = np.isnan(values)
+    valid_values = values[~nan_mask]
+    val_min = np.min(valid_values) if len(valid_values) > 0 else 0
+    val_max = np.max(valid_values) if len(valid_values) > 0 else 0
+    val_mean = np.mean(valid_values) if len(valid_values) > 0 else 0
+
+    zmin, zmax = get_variable_color_limits(active_tab)
+    show_hover = "hover" in (hover_toggle or [])
+    hover_info_val = None if show_hover else "skip"
+    hover_tmpl_val = (
+        "Lon: %{x:.2f}°<br>Lat: %{y:.2f}°<br>Value: %{z:.3f}<extra></extra>"
+        if show_hover else None
+    )
+    colorbar_cfg = dict(title=dict(text=title_name, side="right"), thickness=15, len=0.85)
+
+    grid_points = int(values.size) if values.ndim >= 2 else len(values)
+    use_heatmap = values.ndim >= 2 and grid_points <= MAX_GRID_AXIS_POINTS * MAX_GRID_AXIS_POINTS
+    if use_heatmap:
+        fig = go.Figure(data=go.Heatmap(
+            z=values,
+            x=lons,
+            y=lats,
+            colorscale=colorscale,
+            zmin=zmin,
+            zmax=zmax,
+            hoverinfo=hover_info_val,
+            hovertemplate=hover_tmpl_val,
+            colorbar=colorbar_cfg,
+        ))
+    else:
+        if values.ndim >= 2:
+            lon_grid, lat_grid = np.meshgrid(lons, lats)
+            plot_x = lon_grid.ravel()
+            plot_y = lat_grid.ravel()
+            plot_z = values.ravel()
+        else:
+            plot_x = lons
+            plot_y = lats
+            plot_z = values
+        marker_kwargs = dict(color=plot_z, colorscale=colorscale, colorbar=colorbar_cfg, size=4)
+        if zmin is not None:
+            marker_kwargs["cmin"] = zmin
+        if zmax is not None:
+            marker_kwargs["cmax"] = zmax
+        fig = go.Figure(data=go.Scattergl(
+            x=plot_x,
+            y=plot_y,
+            mode="markers",
+            marker=marker_kwargs,
+            hoverinfo=hover_info_val,
+            hovertemplate=hover_tmpl_val,
+        ))
+
+    if active_tab == "ssh" and lc_coords and len(lc_coords) > 0:
+        lc_lons = [pt[0] for pt in lc_coords]
+        lc_lats = [pt[1] for pt in lc_coords]
+        fig.add_trace(go.Scatter(
+            x=lc_lons,
+            y=lc_lats,
+            mode="lines",
+            name="Loop Current",
+            line=dict(color="#ef4444", width=3),
+            showlegend=True,
+        ))
+
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#cbd5e1"),
+        dragmode="pan",
+        uirevision=MAP_UIREVISION,
+        xaxis=dict(showgrid=True, gridcolor="#334155", zeroline=False),
+        yaxis=dict(showgrid=True, gridcolor="#334155", zeroline=False, scaleanchor="x", scaleratio=1),
+    )
+    fig = apply_map_viewport_to_figure(fig, viewport_for_figures)
+    meta_layout = render_metadata_layout(
+        active_tab, prod_id, stats=(val_min, val_max, val_mean, values.shape)
+    )
+    return fig, meta_layout, True
+
+
+def build_panel_shell(
+    active_tab: str,
+    prod_id: str,
+    date_str: str,
+    prod_name: str,
+    col_width: int,
+) -> dbc.Col:
+    """Create a stable panel shell with graph and metadata placeholders.
+
+    Args:
+        active_tab: Active dashboard variable tab id.
+        prod_id: Product key within the tab.
+        date_str: Local dataset date label.
+        prod_name: Human-readable product name.
+        col_width: Bootstrap column width for the panel.
+
+    Returns:
+        Bootstrap column containing one product card shell.
+    """
+    del active_tab
+    return dbc.Col([
+        dbc.Card([
+            dbc.CardHeader([
+                html.Div([
+                    html.Span(f"{prod_name} ({date_str})", className="fw-bold text-white small"),
+                    html.Span(
+                        "Loading",
+                        id={"type": "panel-badge", "index": prod_id},
+                        className="badge-style badge bg-secondary text-light",
+                    ),
+                ], className="d-flex justify-content-between align-items-center"),
+            ], className="bg-transparent border-bottom border-secondary py-2"),
+            dbc.CardBody([
+                dcc.Graph(
+                    id={"type": "graph", "index": prod_id},
+                    figure=PLACEHOLDER_FIGURE,
+                    config=PLOTLY_GRAPH_CONFIG,
+                    style={"height": "380px"},
+                ),
+                html.Div(
+                    id={"type": "panel-meta", "index": prod_id},
+                    children=html.Div("Loading metadata...", className="small text-muted"),
+                ),
+            ]),
+        ], className="panel-card mb-4"),
+    ], md=col_width)
+
+
 _VISUALIZATION_LOADING_INDICATOR = html.Div(
     "Reading local files, please wait...",
     className="text-info text-center",
@@ -997,68 +1209,33 @@ def update_product_selection(select_all_clicks, clear_clicks, options, current_v
     return current_value or []
 
 
-# Callback 3: Render selected local products in a dynamic grid
+# Callback 3a: Build stable panel shells when layout/selection changes
 @app.callback(
     [
         Output("status-banner", "children"),
         Output("main-panels-container", "children"),
-        Output("map-viewport-sync", "data", allow_duplicate=True),
+        Output("active-panel-ids", "data"),
     ],
     [
-        Input("btn-refresh", "n_clicks"),
         Input("product-checklist", "value"),
         Input("panel-layout-mode", "value"),
         Input("panel-order-sync", "data"),
-        Input("subsample-stride", "value"),
-        Input("hover-toggle", "value"),
-        Input("loop-current-toggle", "value"),
-        Input("data-revision", "data"),
+        Input("variable-tabs", "active_tab"),
     ],
-    [
-        State("variable-tabs", "active_tab"),
-        State("lon-min", "value"),
-        State("lon-max", "value"),
-        State("lat-min", "value"),
-        State("lat-max", "value"),
-        State("map-viewport-sync", "data"),
-    ],
-    running=[
-        (Output("btn-refresh", "disabled"), True, False),
-        (Output("visualization-loading-status", "children", allow_duplicate=True), _VISUALIZATION_LOADING_INDICATOR, ""),
-        (Output("status-banner", "children", allow_duplicate=True), _STATUS_BANNER_LOADING, ""),
-    ],
-    prevent_initial_call="initial_duplicate",
+    [],
+    prevent_initial_call=False,
 )
-def render_panels(
-    refresh_n_clicks,
+def render_panel_layout(
     selected_prods,
     panel_layout_mode,
     panel_order_store,
-    stride,
-    hover_toggle,
-    loop_current_toggle,
-    data_revision,
     active_tab,
-    lon_min,
-    lon_max,
-    lat_min,
-    lat_max,
-    map_viewport_sync,
 ):
-    del refresh_n_clicks, data_revision
-    try:
-        stride_val = int(stride)
-    except (ValueError, TypeError):
-        stride_val = 4
-
-    root_dir = get_data_folder()
-    bbox = (lon_min, lon_max, lat_min, lat_max)
     ordered_prods = apply_panel_order(selected_prods, active_tab, panel_order_store)
-    viewport_for_figures = map_viewport_sync
-    compute_loop_current = "lc" in (loop_current_toggle or [])
+    root_dir = get_data_folder()
 
     if active_tab == "satellite-summary":
-        return render_satellite_summary_banner(), render_satellite_summary_layout(), dash.no_update
+        return render_satellite_summary_banner(), render_satellite_summary_layout(), []
 
     if not ordered_prods:
         banner_content = html.Div([
@@ -1075,10 +1252,94 @@ def render_panels(
                 ),
             ], className="py-5"),
         ], className="panel-card")
-        return banner_content, placeholder_layout, dash.no_update
+        return banner_content, placeholder_layout, []
 
+    col_width = resolve_panel_col_width(len(ordered_prods), panel_layout_mode or "auto")
+    panel_cards = []
+    for prod_id in ordered_prods:
+        prod_info = SATELLITE_PRODUCTS[active_tab][prod_id]
+        date_val = get_best_local_product_date(prod_info, root_dir)
+        date_str = date_val.strftime("%Y-%m-%d")
+        panel_cards.append(
+            build_panel_shell(active_tab, prod_id, date_str, prod_info["name"], col_width)
+        )
+
+    banner_content = html.Div([
+        html.Span("Visualization Mode: ", className="text-white"),
+        html.Strong("Dataset Dates", className="text-info me-3"),
+        html.Span("Loaded Products: ", className="text-white"),
+        html.Strong("Refreshing...", className="text-warning"),
+    ], className="d-flex align-items-center w-100 justify-content-between")
+
+    return banner_content, dbc.Row(panel_cards), ordered_prods
+
+
+# Callback 3b: Update mounted graph figures without rebuilding panel shells
+@app.callback(
+    [
+        Output({"type": "graph", "index": ALL}, "figure"),
+        Output({"type": "panel-meta", "index": ALL}, "children"),
+        Output({"type": "panel-badge", "index": ALL}, "children"),
+        Output({"type": "panel-badge", "index": ALL}, "className"),
+        Output("status-banner", "children", allow_duplicate=True),
+    ],
+    [
+        Input("btn-refresh", "n_clicks"),
+        Input("subsample-stride", "value"),
+        Input("hover-toggle", "value"),
+        Input("loop-current-toggle", "value"),
+        Input("data-revision", "data"),
+        Input("active-panel-ids", "data"),
+    ],
+    [
+        State("variable-tabs", "active_tab"),
+        State("lon-min", "value"),
+        State("lon-max", "value"),
+        State("lat-min", "value"),
+        State("lat-max", "value"),
+        State("map-viewport-sync", "data"),
+        State({"type": "graph", "index": ALL}, "id"),
+    ],
+    running=[
+        (Output("btn-refresh", "disabled"), True, False),
+        (Output("visualization-loading-status", "children", allow_duplicate=True), _VISUALIZATION_LOADING_INDICATOR, ""),
+        (Output("status-banner", "children", allow_duplicate=True), _STATUS_BANNER_LOADING, ""),
+    ],
+    prevent_initial_call="initial_duplicate",
+)
+def update_panel_figures(
+    refresh_n_clicks,
+    stride,
+    hover_toggle,
+    loop_current_toggle,
+    data_revision,
+    active_panel_ids,
+    active_tab,
+    lon_min,
+    lon_max,
+    lat_min,
+    lat_max,
+    map_viewport_sync,
+    graph_ids,
+):
+    del refresh_n_clicks, data_revision
+
+    if active_tab == "satellite-summary" or not active_panel_ids or not graph_ids:
+        return [], [], [], [], dash.no_update
+
+    try:
+        stride_val = int(stride)
+    except (ValueError, TypeError):
+        stride_val = 4
+
+    root_dir = get_data_folder()
+    bbox = (lon_min, lon_max, lat_min, lat_max)
+    compute_loop_current = "lc" in (loop_current_toggle or [])
+    viewport_for_figures = map_viewport_sync
+
+    prod_ids = [graph_id["index"] for graph_id in graph_ids]
     panel_data_by_id: dict[str, dict] = {}
-    max_workers = min(6, max(1, len(ordered_prods)))
+    max_workers = min(6, max(1, len(prod_ids)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
@@ -1090,175 +1351,51 @@ def render_panels(
                 stride_val,
                 compute_loop_current,
             ): prod_id
-            for prod_id in ordered_prods
+            for prod_id in prod_ids
         }
         for future in as_completed(futures):
             payload = future.result()
             panel_data_by_id[payload["prod_id"]] = payload
 
-    panel_cards = []
+    figures = []
+    meta_children = []
+    badge_children = []
+    badge_classes = []
     found_count = 0
-    num_selected = len(ordered_prods)
-    col_width = resolve_panel_col_width(num_selected, panel_layout_mode or "auto")
 
-    for prod_id in ordered_prods:
+    for prod_id in prod_ids:
         payload = panel_data_by_id[prod_id]
-        prod_info = payload["prod_info"]
-        date_str = payload["date_val"].strftime("%Y-%m-%d")
-        exists = payload["exists"]
-        data = payload["data"]
-        err = payload["err"]
-
-        badge_label = "Available" if exists else "Not Found"
-        badge_class = "badge-style badge bg-success text-light" if exists else "badge-style badge bg-danger text-light"
-
-        if exists:
-            if err:
-                fig = go.Figure().update_layout(
-                    xaxis=dict(visible=False),
-                    yaxis=dict(visible=False),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#f8fafc"),
-                )
-                fig.add_annotation(text=err, showarrow=False, font=dict(color="red", size=14))
-                meta_layout = html.Div([
-                    html.Div(f"Error details: {err}", className="text-danger fw-bold small mb-2"),
-                    render_metadata_layout(active_tab, prod_id, stats=None),
-                ])
-            else:
-                found_count += 1
-                if active_tab == "ssh":
-                    lons, lats, values, colorscale, title_name, lc_coords = data
-                else:
-                    lons, lats, values, colorscale, title_name = data
-                    lc_coords = None
-
-                nan_mask = np.isnan(values)
-                valid_values = values[~nan_mask]
-                val_min = np.min(valid_values) if len(valid_values) > 0 else 0
-                val_max = np.max(valid_values) if len(valid_values) > 0 else 0
-                val_mean = np.mean(valid_values) if len(valid_values) > 0 else 0
-
-                zmin, zmax = get_variable_color_limits(active_tab)
-                show_hover = "hover" in (hover_toggle or [])
-                hover_info_val = None if show_hover else "skip"
-                hover_tmpl_val = (
-                    "Lon: %{x:.2f}°<br>Lat: %{y:.2f}°<br>Value: %{z:.3f}<extra></extra>"
-                    if show_hover else None
-                )
-                colorbar_cfg = dict(title=dict(text=title_name, side="right"), thickness=15, len=0.85)
-
-                grid_points = int(values.size) if values.ndim >= 2 else len(values)
-                use_heatmap = values.ndim >= 2 and grid_points <= MAX_GRID_AXIS_POINTS * MAX_GRID_AXIS_POINTS
-                if use_heatmap:
-                    fig = go.Figure(data=go.Heatmap(
-                        z=values,
-                        x=lons,
-                        y=lats,
-                        colorscale=colorscale,
-                        zmin=zmin,
-                        zmax=zmax,
-                        hoverinfo=hover_info_val,
-                        hovertemplate=hover_tmpl_val,
-                        colorbar=colorbar_cfg,
-                    ))
-                else:
-                    if values.ndim >= 2:
-                        lon_grid, lat_grid = np.meshgrid(lons, lats)
-                        plot_x = lon_grid.ravel()
-                        plot_y = lat_grid.ravel()
-                        plot_z = values.ravel()
-                    else:
-                        plot_x = lons
-                        plot_y = lats
-                        plot_z = values
-                    marker_kwargs = dict(color=plot_z, colorscale=colorscale, colorbar=colorbar_cfg, size=4)
-                    if zmin is not None:
-                        marker_kwargs["cmin"] = zmin
-                    if zmax is not None:
-                        marker_kwargs["cmax"] = zmax
-                    fig = go.Figure(data=go.Scattergl(
-                        x=plot_x,
-                        y=plot_y,
-                        mode="markers",
-                        marker=marker_kwargs,
-                        hoverinfo=hover_info_val,
-                        hovertemplate=hover_tmpl_val,
-                    ))
-
-                if active_tab == "ssh" and lc_coords and len(lc_coords) > 0:
-                    lc_lons = [pt[0] for pt in lc_coords]
-                    lc_lats = [pt[1] for pt in lc_coords]
-                    fig.add_trace(go.Scatter(
-                        x=lc_lons,
-                        y=lc_lats,
-                        mode="lines",
-                        name="Loop Current",
-                        line=dict(color="#ef4444", width=3),
-                        showlegend=True,
-                    ))
-
-                fig.update_layout(
-                    margin=dict(l=10, r=10, t=10, b=10),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#cbd5e1"),
-                    dragmode="pan",
-                    uirevision=MAP_UIREVISION,
-                    xaxis=dict(showgrid=True, gridcolor="#334155", zeroline=False),
-                    yaxis=dict(showgrid=True, gridcolor="#334155", zeroline=False, scaleanchor="x", scaleratio=1),
-                )
-                fig = apply_map_viewport_to_figure(fig, viewport_for_figures)
-                meta_layout = render_metadata_layout(
-                    active_tab, prod_id, stats=(val_min, val_max, val_mean, values.shape)
-                )
+        fig, meta_layout, has_data = build_product_figure(
+            active_tab,
+            prod_id,
+            payload,
+            hover_toggle,
+            viewport_for_figures,
+        )
+        figures.append(fig)
+        meta_children.append(meta_layout)
+        if payload["exists"] and has_data:
+            found_count += 1
+            badge_children.append("Available")
+            badge_classes.append("badge-style badge bg-success text-light")
+        elif payload["exists"]:
+            badge_children.append("Error")
+            badge_classes.append("badge-style badge bg-warning text-dark")
         else:
-            fig = go.Figure().update_layout(
-                xaxis=dict(visible=False),
-                yaxis=dict(visible=False),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#f8fafc"),
-            )
-            fig.add_annotation(
-                text="No local data file found. Run a download script under download_data, then refresh.",
-                showarrow=False,
-                font=dict(color="#94a3b8", size=14),
-            )
-            meta_layout = render_metadata_layout(active_tab, prod_id, stats=None)
-
-        panel_cards.append(dbc.Col([
-            dbc.Card([
-                dbc.CardHeader([
-                    html.Div([
-                        html.Span(f"{prod_info['name']} ({date_str})", className="fw-bold text-white small"),
-                        html.Span(badge_label, className=badge_class),
-                    ], className="d-flex justify-content-between align-items-center"),
-                ], className="bg-transparent border-bottom border-secondary py-2"),
-                dbc.CardBody([
-                    dcc.Graph(
-                        id={"type": "graph", "index": prod_id},
-                        figure=fig,
-                        config=PLOTLY_GRAPH_CONFIG,
-                        style={"height": "380px"},
-                    ),
-                    html.Div(meta_layout),
-                ]),
-            ], className="panel-card mb-4"),
-        ], md=col_width))
+            badge_children.append("Not Found")
+            badge_classes.append("badge-style badge bg-danger text-light")
 
     banner_content = html.Div([
         html.Span("Visualization Mode: ", className="text-white"),
         html.Strong("Dataset Dates", className="text-info me-3"),
         html.Span("Loaded Products: ", className="text-white"),
         html.Strong(
-            f"{found_count} of {num_selected} selected",
-            className="text-success" if found_count == num_selected else "text-warning",
+            f"{found_count} of {len(prod_ids)} selected",
+            className="text-success" if found_count == len(prod_ids) else "text-warning",
         ),
     ], className="d-flex align-items-center w-100 justify-content-between")
 
-    return banner_content, dbc.Row(panel_cards), dash.no_update
+    return figures, meta_children, badge_children, badge_classes, banner_content
 
 
 @app.callback(
@@ -1365,9 +1502,14 @@ def update_panel_order_store(
 
 app.clientside_callback(
     """
-    function(relayout_data_list, current_figures) {
+    function(relayout_data_list, current_figures, link_zoom_toggle) {
         const ctx = window.dash_clientside.callback_context;
         if (!ctx.triggered || ctx.triggered.length === 0) {
+            return [window.dash_clientside.no_update, window.dash_clientside.no_update];
+        }
+
+        const link_enabled = link_zoom_toggle && link_zoom_toggle.indexOf('link') >= 0;
+        if (!link_enabled) {
             return [window.dash_clientside.no_update, window.dash_clientside.no_update];
         }
 
@@ -1529,7 +1671,10 @@ app.clientside_callback(
         Output("map-viewport-sync", "data"),
     ],
     [Input({"type": "graph", "index": dash.dependencies.ALL}, "relayoutData")],
-    [State({"type": "graph", "index": dash.dependencies.ALL}, "figure")],
+    [
+        State({"type": "graph", "index": dash.dependencies.ALL}, "figure"),
+        State("link-zoom-toggle", "value"),
+    ],
     prevent_initial_call=True
 )
 
