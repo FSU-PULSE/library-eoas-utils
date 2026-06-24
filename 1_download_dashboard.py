@@ -9,9 +9,9 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "downlo
 import re
 import yaml
 import datetime
-import xarray as xr
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 
 import dash
@@ -45,6 +45,11 @@ def get_data_folder() -> str:
 # ----------------------------------------------------------------------
 # 2. Product metadata from download_data
 # ----------------------------------------------------------------------
+from download_data.dashboard_loader import (
+    MAX_GRID_AXIS_POINTS,
+    invalidate_slice_cache,
+    load_dataset_slice,
+)
 from download_data.dashboard_products import (
     SATELLITE_PRODUCTS,
     SATELLITE_SUMMARY,
@@ -55,6 +60,8 @@ from download_data.dashboard_products import (
     get_product_processing_level,
     get_product_satellite_sensor,
 )
+
+DEFAULT_PRODUCT_SELECTION_COUNT = 1
 
 # ----------------------------------------------------------------------
 # 3. Metadata Layout Generator
@@ -231,191 +238,8 @@ def render_satellite_summary_banner():
     ], className="d-flex align-items-center w-100 justify-content-between")
 
 # ----------------------------------------------------------------------
-# 5. Data Slicing and Coordinate Standardizations
+# 5. Data loading delegated to download_data.dashboard_loader
 # ----------------------------------------------------------------------
-def standardize_coords(ds, lon_var='longitude', lat_var='latitude'):
-    rename_dict = {}
-    for c in ds.coords:
-        if c.lower() in ['lon', 'longitude', 'lons'] and c != lon_var:
-            rename_dict[c] = lon_var
-        if c.lower() in ['lat', 'latitude', 'lats'] and c != lat_var:
-            rename_dict[c] = lat_var
-    if rename_dict:
-        ds = ds.rename(rename_dict)
-    
-    # Map [0, 360] -> [-180, 180]
-    lons = ds[lon_var].values
-    if np.max(lons) > 180:
-        ds = ds.assign_coords({lon_var: ((ds[lon_var] + 180) % 360) - 180})
-        ds = ds.sortby(lon_var)
-    return ds
-
-def load_dataset_slice(sensor_type, product_id, date_val, root_dir, bbox, stride=1):
-    prod_info = SATELLITE_PRODUCTS[sensor_type][product_id]
-    file_name = prod_info["file_fmt"](date_val)
-    file_path = os.path.join(root_dir, prod_info["dir_rel"], file_name)
-    
-    if not os.path.exists(file_path):
-        return None, "Local file not found"
-        
-    try:
-        if file_path.lower().endswith(".csv"):
-            df = pd.read_csv(file_path)
-            lon_var, lat_var = prod_info["coords"]
-            var_name = prod_info["var_name"]
-
-            if "variable" in df.columns and "value" in df.columns:
-                df = df[df["variable"] == var_name].copy()
-                value_col = "value"
-            elif var_name in df.columns:
-                value_col = var_name
-            else:
-                return None, f"Variable '{var_name}' not found in CSV file"
-
-            if lon_var not in df.columns or lat_var not in df.columns:
-                return None, f"Coordinates '{lon_var}'/'{lat_var}' not found in CSV file"
-
-            if df.empty:
-                return None, "No along-track points found for the selected region/date"
-
-            lons = df[lon_var].to_numpy(dtype=float)
-            lats = df[lat_var].to_numpy(dtype=float)
-            values = df[value_col].to_numpy(dtype=float)
-
-            if np.nanmax(lons) > 180:
-                lons = ((lons + 180) % 360) - 180
-
-            mask = (
-                (lons >= bbox[0]) & (lons <= bbox[1]) &
-                (lats >= bbox[2]) & (lats <= bbox[3]) &
-                np.isfinite(values)
-            )
-            lons = lons[mask]
-            lats = lats[mask]
-            values = values[mask]
-
-            if len(values) == 0:
-                return None, "No finite along-track points found for the selected region/date"
-
-            if stride > 1:
-                lons = lons[::stride]
-                lats = lats[::stride]
-                values = values[::stride]
-
-            unit_label = prod_info["unit"]
-            if sensor_type == "ssh":
-                return (lons, lats, values, prod_info["colorscale"], unit_label, None), None
-            return (lons, lats, values, prod_info["colorscale"], unit_label), None
-
-        ds = xr.open_dataset(file_path)
-        
-        lon_var, lat_var = prod_info["coords"]
-        ds = standardize_coords(ds, lon_var, lat_var)
-
-        if prod_info.get("swath_points"):
-            var_name = prod_info["var_name"]
-            if var_name not in ds.variables:
-                ds.close()
-                return None, f"Variable '{var_name}' not found in NetCDF file"
-
-            lons = ds[lon_var].values.astype(float).ravel()
-            lats = ds[lat_var].values.astype(float).ravel()
-            values = ds[var_name].values.astype(float).ravel()
-            ds.close()
-
-            if np.nanmax(lons) > 180:
-                lons = ((lons + 180) % 360) - 180
-
-            mask = (
-                (lons >= bbox[0]) & (lons <= bbox[1]) &
-                (lats >= bbox[2]) & (lats <= bbox[3]) &
-                np.isfinite(values)
-            )
-            lons = lons[mask]
-            lats = lats[mask]
-            values = values[mask]
-
-            if len(values) == 0:
-                return None, "No finite swath points found for the selected region/date"
-
-            if stride > 1:
-                lons = lons[::stride]
-                lats = lats[::stride]
-                values = values[::stride]
-
-            unit_label = prod_info["unit"]
-            if sensor_type == "sst" and np.nanmax(values) > 200:
-                values = values - 273.15
-
-            if sensor_type == "ssh":
-                return (lons, lats, values, prod_info["colorscale"], unit_label, None), None
-            return (lons, lats, values, prod_info["colorscale"], unit_label), None
-        
-        # Crop bounds
-        if ds[lat_var].values[0] > ds[lat_var].values[-1]:
-            ds_subset = ds.sel({lat_var: slice(bbox[3], bbox[2]), lon_var: slice(bbox[0], bbox[1])})
-        else:
-            ds_subset = ds.sel({lat_var: slice(bbox[2], bbox[3]), lon_var: slice(bbox[0], bbox[1])})
-            
-        var_name = prod_info["var_name"]
-        if var_name not in ds_subset.variables:
-            visualizable_vars = [v for v in ds_subset.variables if len(ds_subset[v].shape) >= 2]
-            if visualizable_vars:
-                var_name = visualizable_vars[0]
-            else:
-                ds.close()
-                return None, f"Variable '{var_name}' not found in NetCDF file"
-                
-        data_var = ds_subset[var_name]
-        
-        # Force 2D slice
-        while len(data_var.shape) > 2:
-            data_var = data_var[0]
-            
-        lons = ds_subset[lon_var].values
-        lats = ds_subset[lat_var].values
-        values = data_var.values
-        ds.close()
-        
-        # Specific Kelvin conversion for SST
-        if sensor_type == "sst" and np.nanmax(values) > 200:
-            values = values - 273.15
-            
-        # Specific log10 conversion for Chlorophyll-A
-        unit_label = prod_info["unit"]
-        if sensor_type == "chlora":
-            # Mask values <= 0 to NaN to avoid log10 errors on negative/zero values
-            values = np.where(values > 0, np.log10(values), np.nan)
-            unit_label = "log10(Chlorophyll-A) (mg/m³)"
-            
-        lc_coords = None
-        if sensor_type == "ssh" and var_name == "adt":
-            try:
-                from proc_utils.gom import lc_from_ssh
-                lc = lc_from_ssh(values, lons, lats)
-                if lc is not None:
-                    lc_coords = list(lc)
-            except Exception as e:
-                print(f"Error extracting Loop Current: {e}")
-                
-        # Apply subsampling stride for visualization performance
-        if stride > 1:
-            if values.ndim >= 2:
-                values = values[::stride, ::stride]
-                lons = lons[::stride]
-                lats = lats[::stride]
-            else:
-                values = values[::stride]
-                lons = lons[::stride]
-                lats = lats[::stride]
-                
-        if sensor_type == "ssh":
-            return (lons, lats, values, prod_info["colorscale"], unit_label, lc_coords), None
-        else:
-            return (lons, lats, values, prod_info["colorscale"], unit_label), None
-            
-    except Exception as e:
-        return None, f"Error reading NetCDF file: {e}"
 
 # ----------------------------------------------------------------------
 # 6. Dash UI Layout (Modern Dark theme)
@@ -692,6 +516,15 @@ app.layout = dbc.Container([
                         value=[],
                         id="hover-toggle",
                         switch=True,
+                        className="small mb-2 text-white"
+                    ),
+                    dbc.Checklist(
+                        options=[
+                            {"label": "Compute Loop Current overlay (SSH)", "value": "lc"}
+                        ],
+                        value=[],
+                        id="loop-current-toggle",
+                        switch=True,
                         className="small mb-3 text-white"
                     ),
                     html.Label("Region of Interest (GoM Bounds)", className="fw-bold small text-muted"),
@@ -734,8 +567,12 @@ app.layout = dbc.Container([
                         options=[],
                         value=[],
                         id="product-checklist",
-                        className="small mb-4 text-white"
+                        className="small mb-2 text-white"
                     ),
+                    dbc.ButtonGroup([
+                        dbc.Button("Select all", id="btn-select-all", size="sm", outline=True, color="info"),
+                        dbc.Button("Clear", id="btn-clear-selection", size="sm", outline=True, color="secondary"),
+                    ], className="w-100 mb-4"),
 
                     html.Label("Panel Layout", className="fw-bold small text-muted mb-2"),
                     dcc.Dropdown(
@@ -810,6 +647,7 @@ app.layout = dbc.Container([
                         style={"border": "1px solid rgba(255, 255, 255, 0.05)"},
                     ),
                     html.Div(id="main-panels-container"),
+                    dcc.Store(id="data-revision", data=0),
                     dcc.Store(id="map-viewport-sync", storage_type="session"),
                     dcc.Store(id="panel-order-sync", storage_type="session"),
                 ]),
@@ -862,8 +700,8 @@ def update_checklist_options(active_tab, product_filter):
         options.append({"label": label_text, "value": key})
         visible_product_keys.append(key)
 
-    # By default, select all visible options.
-    value = visible_product_keys
+    # By default, select only the first visible product for faster initial load.
+    value = visible_product_keys[:DEFAULT_PRODUCT_SELECTION_COUNT]
     
     label_mapping = {
         "sst": "Select SST Satellites",
@@ -924,6 +762,137 @@ def resolve_panel_col_width(num_selected: int, layout_mode: str) -> int:
     return 4
 
 
+def execute_downloads(
+    active_tab: str,
+    ordered_prods: list[str],
+    root_dir: str,
+    bbox: tuple[float, float, float, float],
+) -> list[str]:
+    """Download selected products and return activity-log lines."""
+    log_messages = [
+        f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Starting download for {len(ordered_prods)} product(s)..."
+    ]
+    std_bbox = (bbox[0], bbox[2], bbox[1], bbox[3])
+
+    for prod_id in ordered_prods:
+        prod_info = SATELLITE_PRODUCTS[active_tab][prod_id]
+        log_messages.append(
+            f"Downloading {prod_info['name']} (Type: {prod_info.get('download_type', 'unknown')})"
+        )
+        dtype = prod_info.get("download_type", "")
+        try:
+            d_date = get_best_local_product_date(prod_info, root_dir)
+            output_filename = prod_info["file_fmt"](d_date)
+            target_path = os.path.join(root_dir, prod_info.get("dir_rel", ""), output_filename)
+            if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+                log_messages.append(f"File {output_filename} already exists locally. Skipping download.")
+                continue
+
+            if dtype == "copernicus_marine":
+                cop_ds = {
+                    "id": prod_info.get("dataset_id"),
+                    "version": prod_info.get("version", ""),
+                    "variables": prod_info.get("variables", []),
+                    "name": prod_info["name"],
+                    "short_name": prod_info.get("short_name", ""),
+                }
+                target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
+                import download_data.Download_COPERNICUS as dl_copernicus
+                dl_copernicus.download_by_day(d_date, cop_ds, std_bbox, target_dir, output_filename=output_filename)
+                log_messages.append(f"Success! Downloaded Copernicus dataset: {prod_info['name']}")
+            elif dtype == "podaac":
+                import download_data.Download_EARTH_DATA as dl_earthdata
+                from io_utils.io_common import dotdict
+                earth_config = dotdict({
+                    "name": prod_info.get("dataset_id", prod_info.get("name", "")),
+                    "output_folder": os.path.join(root_dir, prod_info.get("dir_rel", "")),
+                    "rename_files": lambda fn: output_filename,
+                })
+                dl_earthdata.download_by_day(d_date, earth_config, std_bbox)
+                log_messages.append(f"Success! Downloaded EarthData dataset: {prod_info['name']}")
+            elif dtype.startswith("erddap_"):
+                import download_data.Download_ERDDAP as dl_erddap
+                target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
+                dl_erddap.download_by_day(d_date, dtype, std_bbox, target_dir, output_filename)
+                log_messages.append(f"Success! Downloaded ERDDAP dataset: {prod_info['name']}")
+            elif dtype == "remss_sss":
+                import download_data.Download_SSS_SMAP_satellite as dl_remss
+                target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
+                dl_remss.download_by_day(d_date, target_dir, output_filename=output_filename)
+                log_messages.append(f"Success! Downloaded REMSS SSS dataset: {prod_info['name']}")
+            elif dtype == "coastwatch_smap_sss_daily":
+                import download_data.Download_SSS_SMAP_satellite as dl_coastwatch_sss
+                target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
+                dl_coastwatch_sss.download_coastwatch_daily_by_day(
+                    d_date, std_bbox, target_dir, output_filename=output_filename
+                )
+                log_messages.append(
+                    f"Success! Downloaded CoastWatch SMAP daily SSS dataset: {prod_info['name']}"
+                )
+            elif dtype == "goes_abi_sst":
+                import download_data.Download_GOES as dl_goes
+                target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
+                dl_goes.download_for_dashboard(
+                    d_date,
+                    prod_info.get("goes_product", "g19_l3c"),
+                    std_bbox,
+                    target_dir,
+                    output_filename,
+                    hour=prod_info.get("download_hour", 12),
+                )
+                log_messages.append(f"Success! Downloaded GOES ABI SST dataset: {prod_info['name']}")
+            elif dtype == "viirs_acspo_l2p":
+                import download_data.Download_VIIRS as dl_viirs
+                target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
+                dl_viirs.download_for_dashboard(d_date, std_bbox, target_dir, output_filename)
+                log_messages.append(f"Success! Downloaded VIIRS ACSPO L2P SST dataset: {prod_info['name']}")
+            elif dtype == "swot_karin_l2":
+                import download_data.Download_SWOT as dl_swot
+                target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
+                dl_swot.download_for_dashboard(d_date, std_bbox, target_dir, output_filename)
+                log_messages.append(f"Success! Downloaded SWOT KaRIn L2 SSH dataset: {prod_info['name']}")
+            else:
+                log_messages.append(f"Warning: Download logic for {dtype} is not wired to a download script yet.")
+        except Exception as exc:
+            log_messages.append(f"Error downloading {prod_info['name']}: {exc}")
+
+    return log_messages
+
+
+def load_product_panel_data(
+    active_tab: str,
+    prod_id: str,
+    root_dir: str,
+    bbox: tuple[float, float, float, float],
+    stride_val: int,
+    compute_loop_current: bool,
+) -> dict:
+    """Load one product's local file metadata and sliced values."""
+    prod_info = SATELLITE_PRODUCTS[active_tab][prod_id]
+    date_val = get_best_local_product_date(prod_info, root_dir)
+    exists = os.path.exists(get_product_file_path(prod_info, date_val, root_dir))
+    data = None
+    err = None
+    if exists:
+        data, err = load_dataset_slice(
+            active_tab,
+            prod_id,
+            date_val,
+            root_dir,
+            bbox,
+            stride=stride_val,
+            compute_loop_current=compute_loop_current,
+        )
+    return {
+        "prod_id": prod_id,
+        "prod_info": prod_info,
+        "date_val": date_val,
+        "exists": exists,
+        "data": data,
+        "err": err,
+    }
+
+
 _VISUALIZATION_LOADING_INDICATOR = html.Div(
     "Reading local files, please wait...",
     className="text-info text-center",
@@ -935,87 +904,55 @@ _STATUS_BANNER_LOADING = html.Div(
 )
 
 
-# Callback 2: Render selected local products in a dynamic grid
+# Callback 2: Download and delete (does not block visualization)
 @app.callback(
     [
         Output("console-log", "children"),
-        Output("status-banner", "children"),
-        Output("main-panels-container", "children"),
-        Output("map-viewport-sync", "data", allow_duplicate=True),
+        Output("data-revision", "data"),
     ],
     [
         Input("btn-download", "n_clicks"),
         Input("confirm-delete-data", "submit_n_clicks"),
-        Input("btn-refresh", "n_clicks"),
-        Input("product-checklist", "value"),
-        Input("panel-layout-mode", "value"),
-        Input("panel-order-sync", "data"),
-        Input("subsample-stride", "value"),
-        Input("hover-toggle", "value"),
-        Input("lon-min", "value"),
-        Input("lon-max", "value"),
-        Input("lat-min", "value"),
-        Input("lat-max", "value"),
     ],
     [
+        State("product-checklist", "value"),
+        State("panel-order-sync", "data"),
         State("variable-tabs", "active_tab"),
-        State("map-viewport-sync", "data"),
+        State("lon-min", "value"),
+        State("lon-max", "value"),
+        State("lat-min", "value"),
+        State("lat-max", "value"),
         State("console-log", "children"),
+        State("data-revision", "data"),
     ],
     running=[
         (Output("btn-download", "disabled"), True, False),
         (Output("btn-delete-data", "disabled"), True, False),
-        (Output("btn-refresh", "disabled"), True, False),
-        (Output("visualization-loading-status", "children"), _VISUALIZATION_LOADING_INDICATOR, ""),
-        (Output("status-banner", "children"), _STATUS_BANNER_LOADING, ""),
+        (Output("visualization-loading-status", "children"), html.Div("Downloading data, please wait...", className="text-info text-center"), ""),
     ],
-    prevent_initial_call="initial_duplicate",
+    prevent_initial_call=True,
 )
-def handle_operations(
+def handle_data_operations(
     download_n_clicks,
     delete_n_clicks,
-    refresh_n_clicks,
     selected_prods,
-    panel_layout_mode,
     panel_order_store,
-    stride,
-    hover_toggle,
+    active_tab,
     lon_min,
     lon_max,
     lat_min,
     lat_max,
-    active_tab,
-    map_viewport_sync,
     existing_log,
+    data_revision,
 ):
     ctx = dash.callback_context
-    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
-
-    bbox_changed = triggered_id in {"lon-min", "lon-max", "lat-min", "lat-max"}
-    viewport_for_figures = None if bbox_changed else map_viewport_sync
-    viewport_store_out = dash.no_update
-    if bbox_changed:
-        viewport_store_out = None
-    
-    try:
-        stride_val = int(stride)
-    except (ValueError, TypeError):
-        stride_val = 4
-        
+    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else None
     root_dir = get_data_folder()
     bbox = (lon_min, lon_max, lat_min, lat_max)
     ordered_prods = apply_panel_order(selected_prods, active_tab, panel_order_store)
-    
     log_messages = []
+    revision_out = data_revision or 0
 
-    if active_tab == "satellite-summary":
-        log_messages.append(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Active Tab: Satellite Summary | Showing current instrument reference tables")
-
-        full_log = "\n".join(log_messages) + "\n\n" + (existing_log if existing_log else "")
-        full_log = full_log[:5000]
-        return full_log, render_satellite_summary_banner(), render_satellite_summary_layout(), viewport_store_out
-
-    # Handle Delete
     if triggered_id == "confirm-delete-data" and delete_n_clicks:
         import shutil
         try:
@@ -1025,216 +962,196 @@ def handle_operations(
                     shutil.rmtree(item_path)
                 else:
                     os.remove(item_path)
+            invalidate_slice_cache()
+            revision_out += 1
             log_messages.append(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Deleted all data inside {root_dir}")
-        except Exception as e:
-            log_messages.append(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Failed to delete data: {e}")
+        except Exception as exc:
+            log_messages.append(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Failed to delete data: {exc}")
+    elif triggered_id == "btn-download" and download_n_clicks and ordered_prods and active_tab != "satellite-summary":
+        log_messages.extend(execute_downloads(active_tab, ordered_prods, root_dir, bbox))
+        invalidate_slice_cache()
+        revision_out += 1
 
-    # Handle Download
-    elif triggered_id == "btn-download" and download_n_clicks and ordered_prods:
-        log_messages.append(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Starting download for {len(ordered_prods)} product(s)...")
-        import subprocess
-        for prod_id in ordered_prods:
-            prod_info = SATELLITE_PRODUCTS[active_tab][prod_id]
-            log_messages.append(f"Downloading {prod_info['name']} (Type: {prod_info.get('download_type', 'unknown')})")
-            
-            dtype = prod_info.get("download_type", "")
-            
-            # Here we separate the dashboard visualization from the download. 
-            # We call the appropriate scripts in download_data instead of re-implementing.
-            try:
-                d_date = get_best_local_product_date(prod_info, root_dir)
-                output_filename = prod_info["file_fmt"](d_date)
-                
-                # Skip download if the target file already exists locally and is non-empty
-                target_path = os.path.join(root_dir, prod_info.get("dir_rel", ""), output_filename)
-                if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
-                    log_messages.append(f"File {output_filename} already exists locally. Skipping download.")
-                    continue
-
-                # Convert bbox from dashboard (lon_min, lon_max, lat_min, lat_max) to standard (lon_min, lat_min, lon_max, lat_max)
-                std_bbox = (bbox[0], bbox[2], bbox[1], bbox[3])
-
-                if dtype == "copernicus_marine":
-                    # Re-map our metadata to cop_ds format
-                    cop_ds = {
-                        "id": prod_info.get("dataset_id"),
-                        "version": prod_info.get("version", ""),
-                        "variables": prod_info.get("variables", []),
-                        "name": prod_info["name"],
-                        "short_name": prod_info.get("short_name", "")
-                    }
-                    target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
-                    
-                    import download_data.Download_COPERNICUS as dl_copernicus
-                    dl_copernicus.download_by_day(d_date, cop_ds, std_bbox, target_dir, output_filename=output_filename)
-                    log_messages.append(f"Success! Downloaded Copernicus dataset: {prod_info['name']}")
-                    
-                elif dtype == "podaac":
-                    import download_data.Download_EARTH_DATA as dl_earthdata
-                    from io_utils.io_common import dotdict
-                    earth_config = dotdict({
-                        "name": prod_info.get("dataset_id", prod_info.get("name", "")),
-                        "output_folder": os.path.join(root_dir, prod_info.get("dir_rel", "")),
-                        "rename_files": lambda fn: output_filename
-                    })
-                    dl_earthdata.download_by_day(d_date, earth_config, std_bbox)
-                    log_messages.append(f"Success! Downloaded EarthData dataset: {prod_info['name']}")
-                    
-                elif dtype.startswith("erddap_"):
-                    import download_data.Download_ERDDAP as dl_erddap
-                    target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
-                    dl_erddap.download_by_day(d_date, dtype, std_bbox, target_dir, output_filename)
-                    log_messages.append(f"Success! Downloaded ERDDAP dataset: {prod_info['name']}")
-                    
-                elif dtype == "remss_sss":
-                    import download_data.Download_SSS_SMAP_satellite as dl_remss
-                    target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
-                    dl_remss.download_by_day(d_date, target_dir, output_filename=output_filename)
-                    log_messages.append(f"Success! Downloaded REMSS SSS dataset: {prod_info['name']}")
-
-                elif dtype == "coastwatch_smap_sss_daily":
-                    import download_data.Download_SSS_SMAP_satellite as dl_coastwatch_sss
-                    target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
-                    dl_coastwatch_sss.download_coastwatch_daily_by_day(
-                        d_date,
-                        std_bbox,
-                        target_dir,
-                        output_filename=output_filename,
-                    )
-                    log_messages.append(
-                        f"Success! Downloaded CoastWatch SMAP daily SSS dataset: {prod_info['name']}"
-                    )
-                    
-                elif dtype == "goes_abi_sst":
-                    import download_data.Download_GOES as dl_goes
-                    target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
-                    dl_goes.download_for_dashboard(
-                        d_date,
-                        prod_info.get("goes_product", "g19_l3c"),
-                        std_bbox,
-                        target_dir,
-                        output_filename,
-                        hour=prod_info.get("download_hour", 12),
-                    )
-                    log_messages.append(f"Success! Downloaded GOES ABI SST dataset: {prod_info['name']}")
-
-                elif dtype == "viirs_acspo_l2p":
-                    import download_data.Download_VIIRS as dl_viirs
-                    target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
-                    dl_viirs.download_for_dashboard(
-                        d_date,
-                        std_bbox,
-                        target_dir,
-                        output_filename,
-                    )
-                    log_messages.append(f"Success! Downloaded VIIRS ACSPO L2P SST dataset: {prod_info['name']}")
-
-                elif dtype == "swot_karin_l2":
-                    import download_data.Download_SWOT as dl_swot
-                    target_dir = os.path.join(root_dir, prod_info.get("dir_rel", ""))
-                    dl_swot.download_for_dashboard(
-                        d_date,
-                        std_bbox,
-                        target_dir,
-                        output_filename,
-                    )
-                    log_messages.append(f"Success! Downloaded SWOT KaRIn L2 SSH dataset: {prod_info['name']}")
-                    
-                else:
-                    log_messages.append(f"Warning: Download logic for {dtype} is not wired to a download script yet.")
-            except Exception as e:
-                log_messages.append(f"Error downloading {prod_info['name']}: {e}")
-
-    # Handle Refresh
-    elif triggered_id == "btn-refresh" and refresh_n_clicks:
-        log_messages.append(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Refreshing selected products from local files in {root_dir}")
-    else:
-        log_messages.append(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Active Tab: {active_tab.upper()} | Visualizing local dataset dates from {root_dir}")
-        
     full_log = "\n".join(log_messages) + "\n\n" + (existing_log if existing_log else "")
-    full_log = full_log[:5000] # Cap log display size
-    
-    # Return placeholder layout if no product is selected
+    return full_log[:5000], revision_out
+
+
+@app.callback(
+    Output("product-checklist", "value", allow_duplicate=True),
+    [
+        Input("btn-select-all", "n_clicks"),
+        Input("btn-clear-selection", "n_clicks"),
+    ],
+    [
+        State("product-checklist", "options"),
+        State("product-checklist", "value"),
+    ],
+    prevent_initial_call=True,
+)
+def update_product_selection(select_all_clicks, clear_clicks, options, current_value):
+    triggered = dash.callback_context.triggered[0]["prop_id"].split(".")[0] if dash.callback_context.triggered else ""
+    if triggered == "btn-select-all":
+        return [option["value"] for option in (options or [])]
+    if triggered == "btn-clear-selection":
+        return []
+    return current_value or []
+
+
+# Callback 3: Render selected local products in a dynamic grid
+@app.callback(
+    [
+        Output("status-banner", "children"),
+        Output("main-panels-container", "children"),
+        Output("map-viewport-sync", "data", allow_duplicate=True),
+    ],
+    [
+        Input("btn-refresh", "n_clicks"),
+        Input("product-checklist", "value"),
+        Input("panel-layout-mode", "value"),
+        Input("panel-order-sync", "data"),
+        Input("subsample-stride", "value"),
+        Input("hover-toggle", "value"),
+        Input("loop-current-toggle", "value"),
+        Input("data-revision", "data"),
+    ],
+    [
+        State("variable-tabs", "active_tab"),
+        State("lon-min", "value"),
+        State("lon-max", "value"),
+        State("lat-min", "value"),
+        State("lat-max", "value"),
+        State("map-viewport-sync", "data"),
+    ],
+    running=[
+        (Output("btn-refresh", "disabled"), True, False),
+        (Output("visualization-loading-status", "children", allow_duplicate=True), _VISUALIZATION_LOADING_INDICATOR, ""),
+        (Output("status-banner", "children", allow_duplicate=True), _STATUS_BANNER_LOADING, ""),
+    ],
+    prevent_initial_call="initial_duplicate",
+)
+def render_panels(
+    refresh_n_clicks,
+    selected_prods,
+    panel_layout_mode,
+    panel_order_store,
+    stride,
+    hover_toggle,
+    loop_current_toggle,
+    data_revision,
+    active_tab,
+    lon_min,
+    lon_max,
+    lat_min,
+    lat_max,
+    map_viewport_sync,
+):
+    del refresh_n_clicks, data_revision
+    try:
+        stride_val = int(stride)
+    except (ValueError, TypeError):
+        stride_val = 4
+
+    root_dir = get_data_folder()
+    bbox = (lon_min, lon_max, lat_min, lat_max)
+    ordered_prods = apply_panel_order(selected_prods, active_tab, panel_order_store)
+    viewport_for_figures = map_viewport_sync
+    compute_loop_current = "lc" in (loop_current_toggle or [])
+
+    if active_tab == "satellite-summary":
+        return render_satellite_summary_banner(), render_satellite_summary_layout(), dash.no_update
+
     if not ordered_prods:
         banner_content = html.Div([
             html.Span("Visualization Mode: ", className="text-white"),
             html.Strong("Dataset Dates", className="text-info me-3"),
-            html.Span("No products selected", className="text-warning")
+            html.Span("No products selected", className="text-warning"),
         ], className="d-flex align-items-center w-100 justify-content-between")
-        
         placeholder_layout = dbc.Card([
             dbc.CardBody([
                 html.H4("No Products Selected", className="text-warning text-center fw-bold mb-2"),
-                html.P("Please check one or more satellite products in the sidebar to visualize and analyze data.", className="text-muted text-center small mb-0")
-            ], className="py-5")
+                html.P(
+                    "Please check one or more satellite products in the sidebar, then click Refresh.",
+                    className="text-muted text-center small mb-0",
+                ),
+            ], className="py-5"),
         ], className="panel-card")
-        
-        return full_log, banner_content, placeholder_layout, viewport_store_out
-        
-    # --------------------------------------------------
-    # Load and Render Files for checked products in dynamic grid
-    # --------------------------------------------------
+        return banner_content, placeholder_layout, dash.no_update
+
+    panel_data_by_id: dict[str, dict] = {}
+    max_workers = min(6, max(1, len(ordered_prods)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                load_product_panel_data,
+                active_tab,
+                prod_id,
+                root_dir,
+                bbox,
+                stride_val,
+                compute_loop_current,
+            ): prod_id
+            for prod_id in ordered_prods
+        }
+        for future in as_completed(futures):
+            payload = future.result()
+            panel_data_by_id[payload["prod_id"]] = payload
+
     panel_cards = []
     found_count = 0
-    
-    # Determine columns layout
     num_selected = len(ordered_prods)
     col_width = resolve_panel_col_width(num_selected, panel_layout_mode or "auto")
-        
+
     for prod_id in ordered_prods:
-        prod_info = SATELLITE_PRODUCTS[active_tab][prod_id]
-        date_val = get_best_local_product_date(prod_info, root_dir)
-        date_str = date_val.strftime("%Y-%m-%d")
-        file_path = get_product_file_path(prod_info, date_val, root_dir)
-        exists = os.path.exists(file_path)
-        
+        payload = panel_data_by_id[prod_id]
+        prod_info = payload["prod_info"]
+        date_str = payload["date_val"].strftime("%Y-%m-%d")
+        exists = payload["exists"]
+        data = payload["data"]
+        err = payload["err"]
+
         badge_label = "Available" if exists else "Not Found"
         badge_class = "badge-style badge bg-success text-light" if exists else "badge-style badge bg-danger text-light"
-        
+
         if exists:
-            found_count += 1
-            # Load the slice
-            data, err = load_dataset_slice(active_tab, prod_id, date_val, root_dir, bbox, stride=stride_val)
             if err:
                 fig = go.Figure().update_layout(
-                    xaxis=dict(visible=False), yaxis=dict(visible=False),
-                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                    font=dict(color="#f8fafc")
+                    xaxis=dict(visible=False),
+                    yaxis=dict(visible=False),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#f8fafc"),
                 )
                 fig.add_annotation(text=err, showarrow=False, font=dict(color="red", size=14))
                 meta_layout = html.Div([
                     html.Div(f"Error details: {err}", className="text-danger fw-bold small mb-2"),
-                    render_metadata_layout(active_tab, prod_id, stats=None)
+                    render_metadata_layout(active_tab, prod_id, stats=None),
                 ])
             else:
+                found_count += 1
                 if active_tab == "ssh":
                     lons, lats, values, colorscale, title_name, lc_coords = data
                 else:
                     lons, lats, values, colorscale, title_name = data
                     lc_coords = None
-                
-                # Check for NaNs
+
                 nan_mask = np.isnan(values)
                 valid_values = values[~nan_mask]
-                
-                # Compute stats
                 val_min = np.min(valid_values) if len(valid_values) > 0 else 0
                 val_max = np.max(valid_values) if len(valid_values) > 0 else 0
                 val_mean = np.mean(valid_values) if len(valid_values) > 0 else 0
-                
-                # Plot
+
                 zmin, zmax = get_variable_color_limits(active_tab)
-                
                 show_hover = "hover" in (hover_toggle or [])
                 hover_info_val = None if show_hover else "skip"
-                hover_tmpl_val = "Lon: %{x:.2f}°<br>Lat: %{y:.2f}°<br>Value: %{z:.3f}<extra></extra>" if show_hover else None
-                
-                colorbar_cfg = dict(
-                    title=dict(text=title_name, side="right"),
-                    thickness=15,
-                    len=0.85
+                hover_tmpl_val = (
+                    "Lon: %{x:.2f}°<br>Lat: %{y:.2f}°<br>Value: %{z:.3f}<extra></extra>"
+                    if show_hover else None
                 )
-                if values.ndim >= 2:
+                colorbar_cfg = dict(title=dict(text=title_name, side="right"), thickness=15, len=0.85)
+
+                grid_points = int(values.size) if values.ndim >= 2 else len(values)
+                use_heatmap = values.ndim >= 2 and grid_points <= MAX_GRID_AXIS_POINTS * MAX_GRID_AXIS_POINTS
+                if use_heatmap:
                     fig = go.Figure(data=go.Heatmap(
                         z=values,
                         x=lons,
@@ -1247,96 +1164,101 @@ def handle_operations(
                         colorbar=colorbar_cfg,
                     ))
                 else:
-                    marker_kwargs = dict(
-                        color=values,
-                        colorscale=colorscale,
-                        colorbar=colorbar_cfg,
-                        size=5,
-                    )
+                    if values.ndim >= 2:
+                        lon_grid, lat_grid = np.meshgrid(lons, lats)
+                        plot_x = lon_grid.ravel()
+                        plot_y = lat_grid.ravel()
+                        plot_z = values.ravel()
+                    else:
+                        plot_x = lons
+                        plot_y = lats
+                        plot_z = values
+                    marker_kwargs = dict(color=plot_z, colorscale=colorscale, colorbar=colorbar_cfg, size=4)
                     if zmin is not None:
                         marker_kwargs["cmin"] = zmin
                     if zmax is not None:
                         marker_kwargs["cmax"] = zmax
-
                     fig = go.Figure(data=go.Scattergl(
-                        x=lons,
-                        y=lats,
+                        x=plot_x,
+                        y=plot_y,
                         mode="markers",
                         marker=marker_kwargs,
                         hoverinfo=hover_info_val,
                         hovertemplate=hover_tmpl_val,
                     ))
-                
-                # Add Loop Current overlay on SSH/ADT if computed
+
                 if active_tab == "ssh" and lc_coords and len(lc_coords) > 0:
                     lc_lons = [pt[0] for pt in lc_coords]
                     lc_lats = [pt[1] for pt in lc_coords]
                     fig.add_trace(go.Scatter(
                         x=lc_lons,
                         y=lc_lats,
-                        mode='lines',
-                        name='Loop Current',
-                        line=dict(color='#ef4444', width=3),
-                        showlegend=True
+                        mode="lines",
+                        name="Loop Current",
+                        line=dict(color="#ef4444", width=3),
+                        showlegend=True,
                     ))
-                
+
                 fig.update_layout(
                     margin=dict(l=10, r=10, t=10, b=10),
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    font=dict(color='#cbd5e1'),
-                    dragmode='pan',
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#cbd5e1"),
+                    dragmode="pan",
                     uirevision=MAP_UIREVISION,
-                    xaxis=dict(showgrid=True, gridcolor='#334155', zeroline=False),
-                    yaxis=dict(showgrid=True, gridcolor='#334155', zeroline=False, scaleanchor="x", scaleratio=1),
+                    xaxis=dict(showgrid=True, gridcolor="#334155", zeroline=False),
+                    yaxis=dict(showgrid=True, gridcolor="#334155", zeroline=False, scaleanchor="x", scaleratio=1),
                 )
                 fig = apply_map_viewport_to_figure(fig, viewport_for_figures)
-                meta_layout = render_metadata_layout(active_tab, prod_id, stats=(val_min, val_max, val_mean, values.shape))
+                meta_layout = render_metadata_layout(
+                    active_tab, prod_id, stats=(val_min, val_max, val_mean, values.shape)
+                )
         else:
-            # Setup placeholder plot
             fig = go.Figure().update_layout(
-                xaxis=dict(visible=False), yaxis=dict(visible=False),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color="#f8fafc")
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#f8fafc"),
             )
-            fig.add_annotation(text="No local data file found. Run a download script under download_data, then refresh.", showarrow=False, font=dict(color="#94a3b8", size=14))
+            fig.add_annotation(
+                text="No local data file found. Run a download script under download_data, then refresh.",
+                showarrow=False,
+                font=dict(color="#94a3b8", size=14),
+            )
             meta_layout = render_metadata_layout(active_tab, prod_id, stats=None)
-            
-        # Create Card Panel component for this product
-        card_item = dbc.Col([
+
+        panel_cards.append(dbc.Col([
             dbc.Card([
                 dbc.CardHeader([
                     html.Div([
                         html.Span(f"{prod_info['name']} ({date_str})", className="fw-bold text-white small"),
-                        html.Span(badge_label, className=badge_class)
-                    ], className="d-flex justify-content-between align-items-center")
+                        html.Span(badge_label, className=badge_class),
+                    ], className="d-flex justify-content-between align-items-center"),
                 ], className="bg-transparent border-bottom border-secondary py-2"),
                 dbc.CardBody([
                     dcc.Graph(
                         id={"type": "graph", "index": prod_id},
                         figure=fig,
                         config=PLOTLY_GRAPH_CONFIG,
-                        style={"height": "380px"}
+                        style={"height": "380px"},
                     ),
-                    html.Div(meta_layout)
-                ])
-            ], className="panel-card mb-4")
-        ], md=col_width)
-        
-        panel_cards.append(card_item)
-        
-    # Render inside a Row
-    panels_grid = dbc.Row(panel_cards)
-    
-    # Banner
+                    html.Div(meta_layout),
+                ]),
+            ], className="panel-card mb-4"),
+        ], md=col_width))
+
     banner_content = html.Div([
         html.Span("Visualization Mode: ", className="text-white"),
         html.Strong("Dataset Dates", className="text-info me-3"),
-        html.Span(f"Loaded Products: ", className="text-white"),
-        html.Strong(f"{found_count} of {num_selected} selected", className="text-success" if found_count == num_selected else "text-warning")
+        html.Span("Loaded Products: ", className="text-white"),
+        html.Strong(
+            f"{found_count} of {num_selected} selected",
+            className="text-success" if found_count == num_selected else "text-warning",
+        ),
     ], className="d-flex align-items-center w-100 justify-content-between")
-    
-    return full_log, banner_content, panels_grid, viewport_store_out
+
+    return banner_content, dbc.Row(panel_cards), dash.no_update
 
 
 @app.callback(
