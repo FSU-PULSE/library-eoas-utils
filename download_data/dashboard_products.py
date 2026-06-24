@@ -45,24 +45,6 @@ SATELLITE_PRODUCTS = {
             "dataset_id": "MUR-JPL-L4-GLOB-v4.1",
             "default_date": "2026-05-05"
         },
-        "sst_cmc_podaac": {
-            "name": "GHRSST CMC L4 (PODAAC)",
-            "source": "Canada Meteorological Center / PODAAC (Requires netrc)",
-            "satellite_sensor": "Multi-sensor infrared (MetOp/NOAA AVHRR backbone)",
-            "processing_level": "L4",
-            "resolution": "0.1° (~10 km)",
-            "period": "2016 - Present",
-            "desc": "CMC 0.1 deg Daily SST Analysis",
-            "dir_rel": os.path.join("SST", "GHRSST_CMC"),
-            "file_fmt": lambda d: f"GHRSST_CMC_{d.year}-{d.month:02d}-{d.day:02d}.nc",
-            "var_name": "analysed_sst",
-            "coords": ("lon", "lat"),
-            "colorscale": "Thermal",
-            "unit": "Temperature (°C)",
-            "download_type": "podaac",
-            "dataset_id": "CMC0.1deg-CMC-L4-GLOB-v3.0",
-            "default_date": "2026-05-05"
-        },
         "sst_odyssea_nrt": {
             "name": "Copernicus ODYSSEA SST L3 NRT (2021-Present)",
             "source": "Copernicus Marine Service (Requires credentials)",
@@ -476,7 +458,6 @@ DEFAULT_FALLBACK_DATE = "2019-05-05"
 PRODUCT_AVAILABILITY = {
     "sst_mur_public": "Daily; delayed analysis, typically available a few days after observation.",
     "sst_mur_podaac": "Daily; delayed analysis, typically available a few days after observation.",
-    "sst_cmc_podaac": "Daily; near-real-time, typically available about 1 day after observation.",
     "sst_odyssea_nrt": "Daily; near-real-time, typically available about 1 day after observation.",
     "sst_odyssea_my": "Historical reprocessed archive; updated periodically, not near-real-time.",
     "sst_goes_abi": "Hourly near-real-time; GOES-East ACSPO L3C scenes are typically available within a few hours.",

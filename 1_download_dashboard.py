@@ -9,7 +9,6 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "downlo
 import re
 import yaml
 import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import plotly.graph_objects as go
@@ -60,8 +59,6 @@ from download_data.dashboard_products import (
     get_product_processing_level,
     get_product_satellite_sensor,
 )
-
-DEFAULT_PRODUCT_SELECTION_COUNT = 1
 
 # ----------------------------------------------------------------------
 # 3. Metadata Layout Generator
@@ -710,9 +707,9 @@ def update_checklist_options(active_tab, product_filter):
         options.append({"label": label_text, "value": key})
         visible_product_keys.append(key)
 
-    # By default, select only the first visible product for faster initial load.
-    value = visible_product_keys[:DEFAULT_PRODUCT_SELECTION_COUNT]
-    
+    # By default, select all visible products.
+    value = visible_product_keys
+
     label_mapping = {
         "sst": "Select SST Satellites",
         "sss": "Select SSS Satellites",
@@ -1339,23 +1336,17 @@ def update_panel_figures(
 
     prod_ids = [graph_id["index"] for graph_id in graph_ids]
     panel_data_by_id: dict[str, dict] = {}
-    max_workers = min(6, max(1, len(prod_ids)))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                load_product_panel_data,
-                active_tab,
-                prod_id,
-                root_dir,
-                bbox,
-                stride_val,
-                compute_loop_current,
-            ): prod_id
-            for prod_id in prod_ids
-        }
-        for future in as_completed(futures):
-            payload = future.result()
-            panel_data_by_id[payload["prod_id"]] = payload
+    # NetCDF/HDF5 backends are not thread-safe; load panels sequentially.
+    for prod_id in prod_ids:
+        payload = load_product_panel_data(
+            active_tab,
+            prod_id,
+            root_dir,
+            bbox,
+            stride_val,
+            compute_loop_current,
+        )
+        panel_data_by_id[payload["prod_id"]] = payload
 
     figures = []
     meta_children = []
