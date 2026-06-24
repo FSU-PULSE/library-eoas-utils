@@ -82,47 +82,48 @@ def download_biorun_data_raw(output_folder):
 # download_biorun_data_raw(output_folder)
 
 # %% Preprocess data
-input_folder = "/unity/f1/ozavala/DATA/GOFFISH/CHLORA/CICESE_NEMO_GOM_RAW"
-output_folder = "/unity/f1/ozavala/DATA/GOFFISH/CHLORA/CICESE_NEMO_GOM"
-
-c_date = date(2019, 1, 10)
-c_date_str = c_date.strftime("%Y-%m-%d")
-c_year = c_date.year
-
-# Getting the dimensions of the dataset from random file
-ds = xr.open_dataset(join(input_folder, "GOM36-ERA5_0_1d_20170327_20170724_ptrc_T.nc"))
-lats = ds.nav_lat[:,0]
-lons = ds.nav_lon[0,:]
-
-# %%
-# Read all the files that contain "ptrc_T" in the name
-ptr_files = [x for x in os.listdir(input_folder) if x.find("ptrc_T") != -1 and x.find(str(c_year)) != -1]
-# print(ptr_files)
-for c_ptr_file in ptr_files:
-    # Create a date for the start date of the file. It is the 4th element of the file name and the format is YYYYMMDD
-    c_start_date = date(int(c_ptr_file.split("_")[3][0:4]), int(c_ptr_file.split("_")[3][4:6]), int(c_ptr_file.split("_")[3][6:8]))
-    c_end_date = date(int(c_ptr_file.split("_")[4][0:4]), int(c_ptr_file.split("_")[4][4:6]), int(c_ptr_file.split("_")[4][6:8]))
-    # Verify the desired date is withing the range of dates
-    if c_date >= c_start_date and c_date <= c_end_date:
-        print(f"{c_ptr_file}  - Current date: {c_date} - {c_start_date}, {c_end_date}")
-        c_sal_temp_file = c_ptr_file.replace("ptrc_T", "grid_T_SAL_TEMP")
-        c_mld_ssh_file = c_ptr_file.replace("ptrc_T", "grid_T_MLD_SSH")
-        # PTR file -> DCHL, NCHL
-        # T_SAL_TEMP -> vosaline, votemper
-        # MLD_SSH -> mld001, sossheig
-        ds_ptr = xr.open_dataset(join(input_folder, c_ptr_file))
-        ds_sal_temp = xr.open_dataset(join(input_folder, c_sal_temp_file))
-        ds_mld_ssh = xr.open_dataset(join(input_folder, c_mld_ssh_file))
-
-        times = pd.date_range(start=c_start_date, end=c_end_date, freq="1D")
-        c_time_idx = np.argmax(times > np.datetime64(c_date))
-        ds = xr.Dataset( {
-            "temperature"    : (("time", "lat", "lon"), ds_sal_temp.votemper[c_time_idx,0,:,:]),
-            "salinity": (("time", "lat", "lon"), ds_sal_temp.vosaline[c_time_idx,0,:,:]),
-            "nchl"    : (("time", "lat", "lon"), ds_ptr.NCHL[c_time_idx,0,:,:]),
-            "dchl"    : (("time", "lat", "lon"), ds_ptr.DCHL[c_time_idx,0,:,:]),
-            "mld"     : (("time", "lat", "lon"), ds_mld_ssh.mld001[c_time_idx,:,:]),
-            "ssh"     : (("time", "lat", "lon"), ds_mld_ssh.sossheig[c_time_idx,:,:]),
-        },
-        {"time": times, "lat": lats, "lon": lons})
-        ds.atrs = ds_ptr.atrs
+if __name__ == '__main__':
+    input_folder = "/unity/f1/ozavala/DATA/GOFFISH/CHLORA/CICESE_NEMO_GOM_RAW"
+    output_folder = "/unity/f1/ozavala/DATA/GOFFISH/CHLORA/CICESE_NEMO_GOM"
+    
+    c_date = date(2019, 1, 10)
+    c_date_str = c_date.strftime("%Y-%m-%d")
+    c_year = c_date.year
+    
+    # Getting the dimensions of the dataset from random file
+    ds = xr.open_dataset(join(input_folder, "GOM36-ERA5_0_1d_20170327_20170724_ptrc_T.nc"))
+    lats = ds.nav_lat[:,0]
+    lons = ds.nav_lon[0,:]
+    
+    # %%
+    # Read all the files that contain "ptrc_T" in the name
+    ptr_files = [x for x in os.listdir(input_folder) if x.find("ptrc_T") != -1 and x.find(str(c_year)) != -1]
+    # print(ptr_files)
+    for c_ptr_file in ptr_files:
+        # Create a date for the start date of the file. It is the 4th element of the file name and the format is YYYYMMDD
+        c_start_date = date(int(c_ptr_file.split("_")[3][0:4]), int(c_ptr_file.split("_")[3][4:6]), int(c_ptr_file.split("_")[3][6:8]))
+        c_end_date = date(int(c_ptr_file.split("_")[4][0:4]), int(c_ptr_file.split("_")[4][4:6]), int(c_ptr_file.split("_")[4][6:8]))
+        # Verify the desired date is withing the range of dates
+        if c_date >= c_start_date and c_date <= c_end_date:
+            print(f"{c_ptr_file}  - Current date: {c_date} - {c_start_date}, {c_end_date}")
+            c_sal_temp_file = c_ptr_file.replace("ptrc_T", "grid_T_SAL_TEMP")
+            c_mld_ssh_file = c_ptr_file.replace("ptrc_T", "grid_T_MLD_SSH")
+            # PTR file -> DCHL, NCHL
+            # T_SAL_TEMP -> vosaline, votemper
+            # MLD_SSH -> mld001, sossheig
+            ds_ptr = xr.open_dataset(join(input_folder, c_ptr_file))
+            ds_sal_temp = xr.open_dataset(join(input_folder, c_sal_temp_file))
+            ds_mld_ssh = xr.open_dataset(join(input_folder, c_mld_ssh_file))
+    
+            times = pd.date_range(start=c_start_date, end=c_end_date, freq="1D")
+            c_time_idx = np.argmax(times > np.datetime64(c_date))
+            ds = xr.Dataset( {
+                "temperature"    : (("time", "lat", "lon"), ds_sal_temp.votemper[c_time_idx,0,:,:]),
+                "salinity": (("time", "lat", "lon"), ds_sal_temp.vosaline[c_time_idx,0,:,:]),
+                "nchl"    : (("time", "lat", "lon"), ds_ptr.NCHL[c_time_idx,0,:,:]),
+                "dchl"    : (("time", "lat", "lon"), ds_ptr.DCHL[c_time_idx,0,:,:]),
+                "mld"     : (("time", "lat", "lon"), ds_mld_ssh.mld001[c_time_idx,:,:]),
+                "ssh"     : (("time", "lat", "lon"), ds_mld_ssh.sossheig[c_time_idx,:,:]),
+            },
+            {"time": times, "lat": lats, "lon": lons})
+            ds.atrs = ds_ptr.atrs

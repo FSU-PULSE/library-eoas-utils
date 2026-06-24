@@ -1,3 +1,5 @@
+"""COAPS-local readers for AVISO, satellite, HYCOM, and NEMO Gulf of Mexico data."""
+
 # %% Imports
 # Purpose: Functions for reading and writing COAPS data
 import os
@@ -18,9 +20,18 @@ from io_utils.dates_utils import get_day_of_year_from_month_and_day
 
 # %% AVISO by month
 def get_aviso_by_month(aviso_folder: str, c_date: datetime, bbox: Optional[List[float]] = None) -> Tuple[xr.Dataset, xr.DataArray, xr.DataArray]:
-    '''
-    Reads AVISO monthly data for a given date. You can also specify a bounding box and the data will be cropped to that region.
-    '''
+    """Read AVISO monthly NetCDF and optionally subset to a bounding box.
+
+    Args:
+        aviso_folder: Directory containing ``YYYY-MM.nc`` monthly files.
+        c_date: Target date used to select the monthly file.
+        bbox: Optional ``[lat_min, lat_max, lon_min, lon_max]`` slice. When
+            ``None``, the full grid is returned.
+
+    Returns:
+        Tuple ``(dataset, lats, lons)`` with coordinate arrays from the opened
+        dataset.
+    """
     aviso_file_name = join(aviso_folder, f"{c_date.year}-{c_date.month:02d}.nc")
     aviso_data = xr.open_dataset(aviso_file_name)
     if bbox is not None:
@@ -88,9 +99,16 @@ def get_aviso_by_date(aviso_folder, c_date, bbox=None):
 # ========================= SST ======================================
 # %% SST GHRSST by date
 def get_sst_ghrsst_by_date(sst_folder, c_date, bbox=None):
-    '''
-    Reads SST single day for a given date. You can also specify a bounding box and the data will be cropped to that region.
-    '''
+    """Read GHRSST MUR daily SST and optionally subset to a bounding box.
+
+    Args:
+        sst_folder: Root folder with ``YYYY/`` subdirectories of MUR subset files.
+        c_date: Target calendar date.
+        bbox: Optional ``[lat_min, lat_max, lon_min, lon_max]``.
+
+    Returns:
+        Tuple ``(dataset, lats, lons)``.
+    """
     c_date_str = c_date.strftime("%Y%m%d")
     sst_file_name = join(sst_folder, str(c_date.year), f"{c_date_str}090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1_subset.nc")
     sst_data = xr.open_dataset(sst_file_name)
@@ -105,6 +123,16 @@ def get_sst_ghrsst_by_date(sst_folder, c_date, bbox=None):
 
 # %% SST OSTIA by year
 def get_sst_ostia_by_year(sst_folder, year, bbox=None):
+    """Read annual OSTIA SST composite and optionally subset to a bounding box.
+
+    Args:
+        sst_folder: Directory containing ``OSTIA_SST_{year}.nc``.
+        year: Calendar year.
+        bbox: Optional ``[lat_min, lat_max, lon_min, lon_max]``.
+
+    Returns:
+        Tuple ``(dataset, lats, lons)``.
+    """
     sst_file_name = join(sst_folder, f"OSTIA_SST_{year}.nc")
     sst_data = xr.open_dataset(sst_file_name)
     if bbox is not None:
@@ -118,9 +146,18 @@ def get_sst_ostia_by_year(sst_folder, year, bbox=None):
 
 # %% SSS by date
 def get_sss_by_date(sss_folder, c_date, bbox=None):
-    '''
-    Reads salinity single day for a given date. You can also specify a bounding box and the data will be cropped to that region.
-    '''
+    """Read RSS SMAP 8-day running-mean salinity for a single day.
+
+    Args:
+        sss_folder: Root with ``YYYY/`` subfolders of RSS NetCDF files.
+        c_date: Target calendar date.
+        bbox: Optional ``[lat_min, lat_max, lon_min, lon_max]``. Longitudes are
+            shifted to ``0..360`` before subsetting to match the product grid.
+
+    Returns:
+        Tuple ``(dataset, lats, lons)`` where ``lons`` are converted to
+        ``-180..180``.
+    """
     c_date_str = c_date.strftime("%Y%m%d")
 
     day_of_year = get_day_of_year_from_month_and_day(c_date.month, c_date.day, year=datetime.now().year)
@@ -138,9 +175,17 @@ def get_sss_by_date(sss_folder, c_date, bbox=None):
 
 # %% Chlora NOAA by date
 def get_chlora_noaa_by_date(input_folder, c_date, bbox=None):
-    '''
-    Reads Chlor-a data single day for a given date. You can also specify a bounding box and the data will be cropped to that region.
-    '''
+    """Read NOAA CoastWatch chlorophyll-a for one day.
+
+    Args:
+        input_folder: Directory of daily ``YYYY-MM-DD.nc`` files.
+        c_date: Target calendar date.
+        bbox: Optional ``[lat_min, lat_max, lon_min, lon_max]``. Latitude slice
+            is reversed because the product latitude axis is decreasing.
+
+    Returns:
+        Tuple ``(dataset, lats, lons)``.
+    """
     chlora_file_name = join(input_folder,  f"{c_date.year}-{c_date.month:02d}-{c_date.day:02d}.nc")
     chlora = xr.open_dataset(chlora_file_name)
     if bbox is not None:
@@ -155,9 +200,17 @@ def get_chlora_noaa_by_date(input_folder, c_date, bbox=None):
     return chlora, lats, lons
 
 def get_chlora_noaa_by_date_range(input_folder, start_date, end_date, bbox=None):
-    '''
-    Reads Chlor-a data for a given date range. You can also specify a bounding box and the data will be cropped to that region.
-    '''
+    """Read and concatenate NOAA chlorophyll-a over a daily date range.
+
+    Args:
+        input_folder: Directory of daily ``YYYY-MM-DD.nc`` files.
+        start_date: Inclusive start (``pandas``-compatible datetime).
+        end_date: Inclusive end (``pandas``-compatible datetime).
+        bbox: Optional ``[lat_min, lat_max, lon_min, lon_max]``.
+
+    Returns:
+        Tuple ``(merged_dataset, lats, lons)`` concatenated along ``time``.
+    """
     merged_chlora_data = None
     for i, c_date in enumerate(pd.date_range(start=start_date, end=end_date, freq="1D")):
         chlora_file_name = join(input_folder,  f"{c_date.year}-{c_date.month:02d}-{c_date.day:02d}.nc")
@@ -213,6 +266,23 @@ def get_chlora_copernicus_by_date(input_folder, c_date, bbox=None):
         return chlora_c_date, lats, lons
 
 def get_chlora_copernicus_by_date_range(input_folder, start_date, end_date, bbox=None):
+    """Read and concatenate Copernicus chlorophyll-a across a date range.
+
+    Opens one annual ``CHL`` file per year spanned by the request and slices by
+    day-of-year indices.
+
+    Args:
+        input_folder: Directory with one Copernicus annual file per year.
+        start_date: Range start (``datetime.date``-like).
+        end_date: Range end (``datetime.date``-like).
+        bbox: Optional ``[lat_min, lat_max, lon_min, lon_max]``.
+
+    Returns:
+        Tuple ``(merged_dataarray, lats, lons)``.
+
+    Raises:
+        AssertionError: When more than one file matches a calendar year.
+    """
     c_start_date = start_date
     c_year = c_start_date.year
     end_year = end_date.year

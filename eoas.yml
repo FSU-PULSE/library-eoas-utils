@@ -25,7 +25,8 @@ dependencies:
     - holoviews=*.*
     - geoviews=*.*
     - geojson=*.*
-    - motuclient=*.*
+    - copernicusmarine
+    - earthaccess
     - scikit-learn=*.*
     - opencv=*.*
     - scikit-image=*.*

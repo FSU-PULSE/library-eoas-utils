@@ -1,3 +1,5 @@
+"""Interactive Plotly 3-D surface and scatter plots for volumetric masks."""
+
 from os.path import join
 
 import SimpleITK as sitk
@@ -8,50 +10,61 @@ import plotly.graph_objs as go
 import numpy as np
 from skimage import measure
 
+
 class ImageVisualizer3D:
+    """Plotly-based 3-D visualizer for binary volumes and ITK images.
+
+    Attributes are set via constructor kwargs and exposed through dynamic
+    ``_attribute`` storage (see ``__getattr__`` / ``__setattr__``).
+    """
+
     _output_folder = 'output_medical'
     _open_browser = False
     _COLORS = ['y', 'r', 'c', 'b', 'g', 'w', 'k', 'y', 'r', 'c', 'b', 'g', 'w', 'k']
 
     def __init__(self, **kwargs):
-        # All the arguments that are passed to the constructor of the class MUST have its name on it.
+        """Accept optional overrides such as ``output_folder`` and ``open_browser``."""
         for arg_name, arg_value in kwargs.items():
             self.__dict__["_" + arg_name] = arg_value
 
     def __getattr__(self, attr):
-        '''Generic getter for all the properties of the class'''
+        """Return private backing attributes for property-style access."""
         return self.__dict__["_" + attr]
 
     def __setattr__(self, attr, value):
-        '''Generic setter for all the properties of the class'''
+        """Store values on private ``_attr`` fields."""
         self.__dict__["_" + attr] = value
 
-    def _check_file_name(self, file_name):
-        """It only validates that the name contains html at the end"""
+    def _check_file_name(self, file_name: str) -> str:
+        """Ensure Plotly HTML output file names end with ``.html``."""
         return file_name if file_name.find('html') != -1 else F'{file_name}.html'
 
-    def plot_surface_itk(self, ctr_np, title='', file_name=''):
-        """
-        Simple wrapper for itk image formats
-        :param ctr_np:
-        :param title:
-        :param file_name:
-        :return:
+    def plot_surface_itk(self, ctr_np, title: str = '', file_name: str = '') -> None:
+        """Render a 3-D surface from a SimpleITK image volume.
+
+        Args:
+            ctr_np: SimpleITK image converted internally with ``GetArrayFromImage``.
+            title: Plot title.
+            file_name: Output HTML file name (``.html`` appended when missing).
         """
         self.plot_surface_np(sitk.GetArrayFromImage(ctr_np), title=title, file_name=file_name)
 
+    def plot_surface_np(self, ctr_np: np.ndarray, title: str = '', file_name: str = '') -> None:
+        """Render a 3-D triangulated surface from a binary numpy volume.
 
-    def plot_surface_np(self, ctr_np, title='', file_name=''):
-        """
-        Makes a 3D surface using Ploty from a 3D Volume. It expects a binary mask
-        :param ctr_np:
-        :param title:
-        :param file_name:
-        :return:
+        Args:
+            ctr_np: 3-D array; values above the marching-cubes threshold are
+                treated as inside the surface (isovalue 0.8).
+            title: Plot title.
+            file_name: Output HTML file name.
+
+        Side effects:
+            Writes an HTML file under :attr:`output_folder` and optionally opens
+            the browser when :attr:`open_browser` is ``True``.
         """
         # Computes marching cubes to obtain a mesh
         print('\tMarching cubes...')
-        vertices, simplices, normals, values = measure.marching_cubes_lewiner(ctr_np,.8)
+        vertices, simplices, normals, values = measure.marching_cubes_lewiner(ctr_np, .8)
         print('\tDone!')
 
         print('\t3D Surface...')
@@ -74,44 +87,42 @@ class ImageVisualizer3D:
             scene=dict(camera=camera),
             title=title)
 
-        plotly.offline.plot(fig, filename=join(self.output_folder,self._check_file_name(file_name)), auto_open=self.open_browser)
-
+        plotly.offline.plot(fig, filename=join(self.output_folder, self._check_file_name(file_name)), auto_open=self.open_browser)
 
     def plot_scatter_np(self, ctr_np, file_name, title=''):
-        """
-        Makes a 3D scatter plot with the obtained
-        :param ctr_np:
-        :param file_name:
-        :param title:
-        :return:
+        """Render a layered 3-D scatter plot of positive voxels by z-slice.
+
+        Args:
+            ctr_np: 3-D binary or label volume.
+            file_name: Output HTML file name.
+            title: Plot title.
+
+        Side effects:
+            Writes HTML to :attr:`output_folder`.
         """
         z, y, x = np.where(ctr_np > 0)
-        data=[]
+        data = []
         max_z = max(z)
-        min_z= min(z)
-        min_y= min(y)
-        min_x= min(x)
+        min_z = min(z)
+        min_y = min(y)
+        min_x = min(x)
 
-        # Making data and assigning colors
         print("\tMaking data")
         for z_level in range(int(min_z), int(max_z)):
-            color = 'rgb({},0,0)'.format(int(255*(z_level-min_z)/(max_z-min_z)))
+            color = 'rgb({},0,0)'.format(int(255 * (z_level - min_z) / (max_z - min_z)))
             idx = np.where(z == z_level)
 
-            data.append(go.Scatter3d(x=x[idx]-min_x, y=y[idx]-min_y, z=z[idx]-min_z, hoverinfo=None,
-                                     mode='markers', marker=dict(symbol='circle',size=2, color=color)))
+            data.append(go.Scatter3d(
+                x=x[idx] - min_x, y=y[idx] - min_y, z=z[idx] - min_z, hoverinfo=None,
+                mode='markers', marker=dict(symbol='circle', size=2, color=color),
+            ))
 
-        # =========== ALL THIS PART IS TO 'IMPROVE' THE LAYOUT ===========
-        tick_l = 5
         tick_w = 3
         gridwidth = tick_w
-        zerolinewidth = tick_w + 3
-        zero_color = 'rgb(0,0,0)'
         grid_color = 'rgb(150,150,150)'
-        tickfont = dict( color='black', size=19, family='Old Standard TT, serif', )
-        titlefont = dict( color='black', size=35, family='Old Standard TT, serif', )
+        tickfont = dict(color='black', size=19, family='Old Standard TT, serif')
+        titlefont = dict(color='black', size=35, family='Old Standard TT, serif')
 
-        # https://plot.ly/python/3d-axes/:w
         layout = go.Layout(
             scene=dict(
                 xaxis=dict(
@@ -119,51 +130,42 @@ class ImageVisualizer3D:
                     gridwidth=gridwidth,
                     tickfont=tickfont,
                     showbackground=True,
-                    # zerolinecolor=zero_color,
-                    # zerolinewidth=zerolinewidth,
                     backgroundcolor='rgb(255,255,255)',
-                    # zeroline=False,
                     gridcolor=grid_color,
-                    # ticklen=tick_l,
-                    # tickwidth=tick_w,
-                    titlefont=titlefont
+                    titlefont=titlefont,
                 ),
                 yaxis=dict(
                     nticks=5,
                     gridwidth=gridwidth,
                     showbackground=True,
                     tickfont=tickfont,
-                    # zeroline=False,
-                    # zerolinewidth=zerolinewidth,
-                    # zerolinecolor=zero_color,
                     backgroundcolor='rgb(255,255,255)',
                     gridcolor=grid_color,
-                    # ticklen=tick_l,
-                    # tickwidth=tick_w,
-                    titlefont=titlefont
+                    titlefont=titlefont,
                 ),
                 zaxis=dict(
                     nticks=5,
                     gridwidth=gridwidth,
                     showbackground=True,
                     tickfont=tickfont,
-                    # zeroline=False,
-                    # zerolinewidth=zerolinewidth,
-                    # zerolinecolor=zero_color,
                     backgroundcolor='rgb(255,255,255)',
                     gridcolor=grid_color,
-                    # ticklen=tick_l,
-                    # tickwidth=tick_w,
-                    titlefont=titlefont),
+                    titlefont=titlefont,
+                ),
                 aspectmode='cube',
                 camera=dict(
                     up=dict(x=1, y=0, z=0),
                     center=dict(x=0, y=0, z=0),
-                    eye=dict(x=2, y=-3, z=1.5))
+                    eye=dict(x=2, y=-3, z=1.5),
+                ),
             ))
 
         fig = go.Figure(data=data, layout=layout)
 
         file_name = file_name if file_name.find('html') != -1 else F'{file_name}.html'
-        fig['layout'].update( title=title)
-        plotly.offline.plot(fig, filename=join(self.output_folder,self._check_file_name(file_name)), auto_open=self.open_browser)
+        fig['layout'].update(title=title)
+        plotly.offline.plot(
+            fig,
+            filename=join(self.output_folder, self._check_file_name(file_name)),
+            auto_open=self.open_browser,
+        )

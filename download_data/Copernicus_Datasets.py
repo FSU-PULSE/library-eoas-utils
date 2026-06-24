@@ -1,39 +1,44 @@
+"""Copernicus Marine dataset identifiers and metadata for download scripts."""
 
-
-# Make an enumeration of the datasets
 from enum import Enum
 
+
 class Copernicus_Enum(Enum):
-    # Lets try to name it with FIELD_Lx_SENSOR_RES_YEAR or FIELD_Lx_RES_YEAR  for multi-sensor datasets
+    """Catalog keys for supported Copernicus Marine products.
+
+    Naming convention: ``FIELD_Lx_SENSOR_RES_YEAR`` (or ``FIELD_Lx_RES_YEAR``
+    for multi-sensor composites). Member doc URLs point to product pages.
+    """
     # Ch
     CHLORA_L3_OLCI_300M_2016 = 0 # https://data.marine.copernicus.eu/product/OCEANCOLOUR_GLO_BGC_L3_MY_009_103/description
     CHLORA_L3_OLCI_4KM_2016 = 1 # https://data.marine.copernicus.eu/product/OCEANCOLOUR_GLO_BGC_L3_MY_009_103/description
     CHLORA_L4_D_1997 = 2 # https://data.marine.copernicus.eu/product/OCEANCOLOUR_GLO_BGC_L4_MY_009_104/description
 
     SST_ODYSSEA_L3_P1D_2021 = 20 # https://data.marine.copernicus.eu/product/SST_GLO_SST_L3S_NRT_OBSERVATIONS_010_010/description
-    SST_ODYSSEA_L3_P1D_1982 = 20 # https://data.marine.copernicus.eu/product/SST_GLO_PHY_L3S_MY_010_039/description
+    SST_ODYSSEA_L3_P1D_1982 = 22 # https://data.marine.copernicus.eu/product/SST_GLO_PHY_L3S_MY_010_039/description
     SST_OSTIA_L4_D = 21 # https://data.marine.copernicus.eu/product/SST_GLO_SST_L4_NRT_OBSERVATIONS_010_001/description
 
     SSH_DUACS_L4_D_2022 = 30 # https://data.marine.copernicus.eu/product/SEALEVEL_GLO_PHY_L4_NRT_008_046/description
     SSH_DUACS_L4_D_1993 = 31 # https://data.marine.copernicus.eu/product/SEALEVEL_GLO_PHY_L4_MY_008_047/description
     SSH_DUACS_L3_D_SWATHS_2022 = 32 # https://data.marine.copernicus.eu/product/SEALEVEL_GLO_PHY_L3_NRT_008_044/description
 
-# Create a dictionary with the Copernicus datasets
+# Metadata dict keyed by :class:`Copernicus_Enum` for use with ``copernicusmarine.subset``.
 Copernicus_Datasets = {
     Copernicus_Enum.SSH_DUACS_L4_D_2022: {
-        'name': 'Global Ocean - Sea Level Anomaly Multi-sensor L4 Observations Since 2022',
-        'short_name': '', 
-        'id': 'cmems_obs-sl_glo_phy-ssh_nrt_allsat-l4-duacs-0.25deg_P1D',
-        'version':'202311',
-        'start_date':"2022-01-01",
-        'resolution':'0.25x0.25',
-        'variables':["adt", "err_sla", "err_ugosa", "err_vgosa", "flag_ice", "sla", "ugos", "ugosa", "vgos", "vgosa"],
+        'name': 'Global Ocean Gridded L4 Sea Surface Heights And Derived Variables NRT',
+        'short_name': 'SSH_DUACS_L4_NRT',
+        'id': 'cmems_obs-sl_glo_phy-ssh_nrt_allsat-l4-duacs-0.125deg_P1D',
+        'version': '202506',
+        'start_date': '2022-01-01',
+        'end_date': 'Current',
+        'resolution': '0.125x0.125',
+        'variables': ["adt", "err_sla", "err_ugosa", "err_vgosa", "flag_ice", "sla", "ugos", "ugosa", "vgos", "vgosa"],
     },
     Copernicus_Enum.SSH_DUACS_L4_D_1993: {
         'name': 'Global Ocean Gridded L 4 Sea Surface Heights And Derived Variables Reprocessed 1993',
         'short_name': '', 
-        'id': "cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.25deg_P1D",
-        'version':'202112',
+        'id': "cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D",
+        'version':'202411',
         'start_date':"1993-01-01",
         'end_date':"Sep 2023",
         'resolution':'0.25x0.25',

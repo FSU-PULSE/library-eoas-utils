@@ -1,3 +1,5 @@
+"""Cartopy-based map visualization for EOAS gridded and geospatial data."""
+
 import os
 from PIL import Image
 import cv2
@@ -19,15 +21,15 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import cartopy
 
-def select_colormap(field_name):
-    '''
-    Based on the name if the field it chooses a colormap from cmocean
+def select_colormap(field_name: str):
+    """Pick a cmocean colormap from a variable name heuristic.
+
     Args:
-        field_name:
+        field_name: Variable or product name (case-insensitive substring match).
 
     Returns:
-
-    '''
+        A ``cmocean`` colormap object, or ``None`` when no rule matches.
+    """
     field_name = field_name.lower()
     if np.any([field_name.find(x) != -1 for x in ('ssh', 'srfhgt', 'adt','surf_el','sla')]):
         # cmaps_fields.append(cmocean.cm.deep_r)
@@ -49,10 +51,19 @@ def select_colormap(field_name):
 
 
 class EOAImageVisualizer:
-    """This class makes plenty of plots assuming we are plotting Geospatial data (maps).
-    It is made to read xarrays, numpy arrays, and numpy arrays in dictionaries
-    vizobj = new EOAImageVisualizer(disp_images=True, output_folder='output',
-                                    lats=[lats],lons=[lons])
+    """Matplotlib/Cartopy visualizer for EOAS map products.
+
+    Supports xarray datasets, numpy arrays, and depth/time stacks. Configure
+    display options via constructor kwargs (stored as ``_attr`` properties).
+
+    Example::
+
+        viz = EOAImageVisualizer(
+            disp_images=True,
+            output_folder="output",
+            lats=lats,
+            lons=lons,
+        )
     """
     # ------- 'Global attributes' defined at init ------------
     _COLORS = ['y', 'r', 'c', 'b', 'g', 'w', 'k', 'y', 'r', 'c', 'b', 'g', 'w', 'k']
@@ -82,7 +93,17 @@ class EOAImageVisualizer:
     def __init__(self, disp_images=True, output_folder='output',
                  lats=[-90,90], lons =[-180,180],
                  projection=ccrs.PlateCarree(), **kwargs):
-        # All the arguments that are passed to the constructor of the class MUST have its name on it.
+        """Initialize map extent, projection, and optional style overrides.
+
+        Args:
+            disp_images: When ``False``, figures are closed instead of shown.
+            output_folder: Directory for saved PNG outputs.
+            lats: Latitude extent as min/max or coordinate vector.
+            lons: Longitude extent as min/max or coordinate vector. Values
+                above 180 are wrapped by subtracting 360.
+            projection: Cartopy CRS for subplot creation.
+            **kwargs: Additional ``_name`` attributes (e.g. ``background``).
+        """
         self._disp_images = disp_images
         self._output_folder = output_folder
         self._projection = projection

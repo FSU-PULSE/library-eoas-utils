@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eoas-pyutils"
+version = "0.1.0"
+description = "Utilities for EOAS including IO, Visualization, Preprocessing, Metrics, etc."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pandas",
+    "xarray",
+    "netcdf4",
+    "matplotlib",
+    "scipy",
+    "copernicusmarine",
+    "earthaccess",
+    "cftime",
+]
+
+[tool.setuptools.packages.find]
+include = ["io_utils*", "viz_utils*", "proc_utils*", "hycom_utils*", "download_data*"]
+exclude = ["tests*", "test_data*", "docs*"]

@@ -1,3 +1,4 @@
+"""Batch-generate Loop Current contour pickles from AVISO ADT monthly files."""
 
 #%%
 import xarray as xr
@@ -10,6 +11,7 @@ from os.path import join
 from proc_utils.gom import lc_from_ssh
 import pickle
 # This file generates the LC for the AVISO data for the specified dates
+# Output: daily pickle files of (lon, lat) contour pairs via proc_utils.gom.lc_from_ssh
 
 #%% ============ It ge
 print("Reading data...")
