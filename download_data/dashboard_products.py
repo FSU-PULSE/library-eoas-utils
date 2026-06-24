@@ -372,7 +372,7 @@ SATELLITE_PRODUCTS = {
             "unit": "KaRIn Sea Surface Height (m)",
             "download_type": "swot_karin_l2",
             "swath_points": True,
-            "default_date": "2024-02-01"
+            "default_date": "2026-05-01"
         }
     },
     "chlora": {
